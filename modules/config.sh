@@ -752,11 +752,27 @@ delete_all_nodes() {
 
     # 1.12.0+ 支持 default_domain_resolver
     # 1.14.0+ 强制要求：所有使用域名的 outbound 必须有 domain_resolver
-    # 设为 "remote" 确保能解析外部域名
+    # 设为 "remote" 确保能解析外部域名，同时根据出站模式设置 strategy
     local route_domain_resolver=""
     if [[ $SB_GE_1_12 -eq 1 ]]; then
-        route_domain_resolver=",
+        case "$OUTBOUND_IP_MODE" in
+            ipv4)
+                route_domain_resolver=",
+    \"default_domain_resolver\": {\"server\": \"remote\", \"strategy\": \"ipv4_only\"}"
+                ;;
+            ipv6_only)
+                route_domain_resolver=",
+    \"default_domain_resolver\": {\"server\": \"remote\", \"strategy\": \"ipv6_only\"}"
+                ;;
+            ipv6)
+                route_domain_resolver=",
+    \"default_domain_resolver\": {\"server\": \"remote\", \"strategy\": \"prefer_ipv6\"}"
+                ;;
+            *)
+                route_domain_resolver=",
     \"default_domain_resolver\": \"remote\""
+                ;;
+        esac
     fi
 
     cat > ${CONFIG_FILE} << EOFCONFIG
@@ -819,7 +835,8 @@ build_outbounds() {
             ;;
         ipv4)
             relay_domain_strategy="ipv4_only"
-            [[ -n "${SERVER_IP}" ]] && relay_bind_fields="\"inet4_bind_address\":\"${SERVER_IP}\""
+            # 不绑定 inet4_bind_address，仅用 domain_resolver strategy 控制出站
+            # 绑定地址在某些网络配置下会导致连接失败 (sing-box issue #3440)
             ;;
         dual|"")
             # dual 模式：同时支持 IPv4/IPv6，不绑定特定地址
@@ -862,7 +879,8 @@ build_outbounds() {
             resolver_strategy="ipv6_only"
             ;;
         ipv4)
-            [[ -n "${SERVER_IP}" ]] && bind_field=",\"inet4_bind_address\":\"${SERVER_IP}\""
+            # 不绑定 inet4_bind_address，仅用 domain_resolver strategy 控制出站
+            # 绑定地址在某些网络配置下会导致连接失败 (sing-box issue #3440)
             resolver_strategy="ipv4_only"
             ;;
     esac
@@ -969,9 +987,23 @@ build_route_rules() {
 
     # 组合路由 JSON（根据 route_rules 是否非空决定是否包含 rules 数组）
     # 1.14.0+ 强制要求 default_domain_resolver
+    # default_domain_resolver 需要包含 strategy，否则内部解析可能返回 AAAA 记录
     local route_domain_resolver=""
     if [[ $SB_GE_1_12 -eq 1 ]]; then
-        route_domain_resolver=",\"default_domain_resolver\":\"remote\""
+        case "$OUTBOUND_IP_MODE" in
+            ipv4)
+                route_domain_resolver=",\"default_domain_resolver\":{\"server\":\"remote\",\"strategy\":\"ipv4_only\"}"
+                ;;
+            ipv6_only)
+                route_domain_resolver=",\"default_domain_resolver\":{\"server\":\"remote\",\"strategy\":\"ipv6_only\"}"
+                ;;
+            ipv6)
+                route_domain_resolver=",\"default_domain_resolver\":{\"server\":\"remote\",\"strategy\":\"prefer_ipv6\"}"
+                ;;
+            *)
+                route_domain_resolver=",\"default_domain_resolver\":\"remote\""
+                ;;
+        esac
     fi
     local route_json
     if [[ ${#route_rules[@]} -gt 0 ]]; then
@@ -991,6 +1023,7 @@ build_route_rules() {
 # 构建 DNS 配置
 build_dns_config() {
     local dns_strategy="prefer_ipv4"
+    [[ "$OUTBOUND_IP_MODE" == "ipv4" ]] && dns_strategy="ipv4_only"
     [[ "$OUTBOUND_IP_MODE" == "ipv6" ]] && dns_strategy="prefer_ipv6"
     [[ "$OUTBOUND_IP_MODE" == "ipv6_only" ]] && dns_strategy="ipv6_only"
 
