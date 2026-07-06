@@ -24,41 +24,96 @@ fi
 # ==================== 模块加载 ====================
 # 模块目录固定使用 /etc/sing-box/modules，确保 sb 快捷命令和首次安装路径一致
 MODULES_DIR="/etc/sing-box/modules"
-MODULES_URL="https://raw.githubusercontent.com/Kiss8202/Trae/main/modules"
+REPO="Kiss8202/Trae"
+RELEASE_URL="https://github.com/${REPO}/releases/download/latest/sb-modules.tar.gz"
+RAW_URL="https://raw.githubusercontent.com/${REPO}/main/modules"
 
-# 如果模块目录不存在，从 GitHub 下载
-if [[ ! -d "$MODULES_DIR" ]]; then
-    echo "[引导] 模块目录不存在，正在从 GitHub 下载..."
-    mkdir -p "$MODULES_DIR"
+# 下载并解压模块压缩包
+download_modules_archive() {
+    local tmp_file=$(mktemp /tmp/sb-modules.XXXXXX.tar.gz)
+    echo -n "[引导] 下载模块压缩包 ... "
+    if curl -sfL --connect-timeout 15 --max-time 60 "${RELEASE_URL}" -o "${tmp_file}" 2>/dev/null; then
+        # 验证是否为有效的 gzip 文件
+        if tar -tzf "${tmp_file}" >/dev/null 2>&1; then
+            mkdir -p "${MODULES_DIR}"
+            if tar -xzf "${tmp_file}" -C "${MODULES_DIR}" 2>/dev/null; then
+                rm -f "${tmp_file}"
+                echo "完成"
+                return 0
+            else
+                echo "解压失败"
+                rm -f "${tmp_file}"
+                return 1
+            fi
+        else
+            echo "文件无效"
+            rm -f "${tmp_file}"
+            return 1
+        fi
+    else
+        echo "下载失败"
+        rm -f "${tmp_file}"
+        return 1
+    fi
+}
+
+# 逐个下载模块文件（回退方案）
+download_modules_raw() {
+    mkdir -p "${MODULES_DIR}"
     for module in core install links dns relay protocols config menu; do
         echo -n "[引导] 下载模块 ${module}.sh ... "
-        if curl -sfL --connect-timeout 10 --max-time 30 "${MODULES_URL}/${module}.sh" -o "${MODULES_DIR}/${module}.sh" 2>/dev/null; then
+        if curl -sfL --connect-timeout 10 --max-time 30 "${RAW_URL}/${module}.sh" -o "${MODULES_DIR}/${module}.sh" 2>/dev/null; then
             echo "完成"
         else
             echo "失败"
             echo "错误: 无法下载模块 ${module}.sh，请检查网络连接"
-            exit 1
+            return 1
         fi
     done
-else
-    # 模块目录已存在，检查版本是否需要更新
-    CURRENT_VERSION=""
+    return 0
+}
+
+# 检查本地版本与远程版本是否一致
+check_version_update() {
+    local CURRENT_VERSION=""
     if [[ -f "${MODULES_DIR}/core.sh" ]]; then
         CURRENT_VERSION=$(grep '^MODULE_VERSION=' "${MODULES_DIR}/core.sh" 2>/dev/null | head -1 | cut -d'"' -f2)
     fi
-    REMOTE_VERSION=""
-    REMOTE_VERSION=$(curl -sf --connect-timeout 5 --max-time 10 "${MODULES_URL}/core.sh" 2>/dev/null | grep '^MODULE_VERSION=' | head -1 | cut -d'"' -f2)
+    local REMOTE_VERSION=""
+    REMOTE_VERSION=$(curl -sf --connect-timeout 5 --max-time 10 "${RAW_URL}/core.sh" 2>/dev/null | grep '^MODULE_VERSION=' | head -1 | cut -d'"' -f2)
 
     if [[ -n "$REMOTE_VERSION" && "$REMOTE_VERSION" != "$CURRENT_VERSION" ]]; then
         echo "[引导] 检测到模块更新 (本地: ${CURRENT_VERSION:-未知} → 远程: ${REMOTE_VERSION})，正在更新..."
-        for module in core install links dns relay protocols config menu; do
-            echo -n "[引导] 更新模块 ${module}.sh ... "
-            if curl -sfL --connect-timeout 10 --max-time 30 "${MODULES_URL}/${module}.sh" -o "${MODULES_DIR}/${module}.sh" 2>/dev/null; then
-                echo "完成"
-            else
-                echo "失败（保留旧版本）"
-            fi
-        done
+        return 0  # 需要更新
+    fi
+    return 1  # 不需要更新
+}
+
+if [[ ! -d "$MODULES_DIR" ]]; then
+    # 模块目录不存在，首次安装
+    echo "[引导] 模块目录不存在，正在从 Releases 下载..."
+    if ! download_modules_archive; then
+        echo "[引导] Releases 下载失败，回退到逐个下载..."
+        if ! download_modules_raw; then
+            echo "错误: 所有下载方式均失败，请检查网络连接"
+            exit 1
+        fi
+    fi
+else
+    # 模块目录已存在，检查是否需要更新
+    if check_version_update; then
+        # 优先从 Releases 下载
+        if ! download_modules_archive; then
+            echo "[引导] Releases 下载失败，回退到逐个下载..."
+            for module in core install links dns relay protocols config menu; do
+                echo -n "[引导] 更新模块 ${module}.sh ... "
+                if curl -sfL --connect-timeout 10 --max-time 30 "${RAW_URL}/${module}.sh" -o "${MODULES_DIR}/${module}.sh" 2>/dev/null; then
+                    echo "完成"
+                else
+                    echo "失败（保留旧版本）"
+                fi
+            done
+        fi
     fi
 fi
 

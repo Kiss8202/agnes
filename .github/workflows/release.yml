@@ -1,0 +1,56 @@
+name: Auto Release
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: ver
+        run: |
+          VERSION=$(grep '^MODULE_VERSION=' modules/core.sh | head -1 | cut -d'"' -f2)
+          echo "version=v${VERSION}" >> "$GITHUB_OUTPUT"
+          echo "VERSION: v${VERSION}"
+
+      - name: Package
+        run: |
+          mkdir -p /tmp/sb-modules
+          cp modules/*.sh /tmp/sb-modules/
+          cd /tmp
+          tar czf sb-modules.tar.gz -C sb-modules .
+          sha256sum sb-modules.tar.gz | awk '{print $1}' > sb-modules.tar.gz.sha256
+          cp sb-modules.tar.gz sb-modules.tar.gz.sha256 "$GITHUB_WORKSPACE/"
+
+      - name: Delete existing release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          TAG="latest"
+          if gh release view "$TAG" -R "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release delete "$TAG" -R "$GITHUB_REPOSITORY" --yes --cleanup-tag
+          fi
+
+      - name: Create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "latest" \
+            -R "$GITHUB_REPOSITORY" \
+            --title "sing-box 管理脚本 ${{ steps.ver.outputs.version }}" \
+            --notes "自动构建 - ${{ steps.ver.outputs.version }}
+
+使用方法：
+\`\`\`bash
+bash <(curl -sfL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh)
+\`\`\`" \
+            sb-modules.tar.gz sb-modules.tar.gz.sha256
