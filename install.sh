@@ -25,14 +25,67 @@ fi
 # 模块目录固定使用 /etc/sing-box/modules，确保 sb 快捷命令和首次安装路径一致
 MODULES_DIR="/etc/sing-box/modules"
 REPO="Kiss8202/Trae"
-RELEASE_URL="https://github.com/${REPO}/releases/download/latest/sb-modules.tar.gz"
-RAW_URL="https://raw.githubusercontent.com/${REPO}/main/modules"
+
+# ==================== GitHub 镜像支持 ====================
+# 环境变量 GH_MIRROR 可手动指定镜像前缀，例如：
+#   GH_MIRROR=https://ghfast.top bash install.sh
+# 如果未设置，自动从配置文件恢复；仍为空则尝试国内镜像列表
+GH_MIRROR="${GH_MIRROR:-}"
+# 尝试从已保存的配置文件恢复镜像设置
+if [[ -z "$GH_MIRROR" ]] && [[ -f "/etc/sing-box/ip_config.conf" ]]; then
+    _saved_mirror=$(grep '^GH_MIRROR=' "/etc/sing-box/ip_config.conf" 2>/dev/null | head -1 | cut -d'"' -f2)
+    [[ -n "$_saved_mirror" ]] && GH_MIRROR="$_saved_mirror"
+    unset _saved_mirror
+fi
+
+# GitHub 直连 URL
+GH_RELEASE_URL="https://github.com/${REPO}/releases/download/latest/sb-modules.tar.gz"
+GH_RAW_URL="https://raw.githubusercontent.com/${REPO}/main/modules"
+
+# 国内镜像列表（镜像前缀 + GitHub 原始 URL = 镜像 URL）
+# 格式：镜像会拼接原始 GitHub URL，如 https://ghfast.top/https://github.com/...
+GH_MIRRORS=(
+    "https://ghfast.top"
+    "https://gh-proxy.com"
+    "https://gh.api.999888y.com"
+)
+
+# 生成镜像 URL 列表
+build_download_urls() {
+    local base_url="$1"
+    local urls=("$base_url")
+    # 如果手动指定了镜像，优先使用
+    if [[ -n "$GH_MIRROR" ]]; then
+        urls=("${GH_MIRROR}/${base_url}" "$base_url")
+    else
+        # 自动添加镜像列表
+        for mirror in "${GH_MIRRORS[@]}"; do
+            urls+=("${mirror}/${base_url}")
+        done
+    fi
+    echo "${urls[@]}"
+}
+
+# 多源下载：依次尝试 URL 列表，第一个成功即返回
+multi_source_download() {
+    local output_file="$1"
+    shift
+    local urls=("$@")
+    for url in "${urls[@]}"; do
+        if curl -sfL --connect-timeout 10 --max-time 60 "${url}" -o "${output_file}" 2>/dev/null; then
+            return 0
+        fi
+    done
+    return 1
+}
 
 # 下载并解压模块压缩包
 download_modules_archive() {
     local tmp_file=$(mktemp /tmp/sb-modules.XXXXXX.tar.gz)
     echo -n "[引导] 下载模块压缩包 ... "
-    if curl -sfL --connect-timeout 15 --max-time 60 "${RELEASE_URL}" -o "${tmp_file}" 2>/dev/null; then
+
+    local release_urls=($(build_download_urls "$GH_RELEASE_URL"))
+    if multi_source_download "${tmp_file}" "${release_urls[@]}"; then
         # 验证是否为有效的 gzip 文件
         if tar -tzf "${tmp_file}" >/dev/null 2>&1; then
             mkdir -p "${MODULES_DIR}"
@@ -62,9 +115,13 @@ download_modules_raw() {
     mkdir -p "${MODULES_DIR}"
     for module in core install links dns relay protocols config menu; do
         echo -n "[引导] 下载模块 ${module}.sh ... "
-        if curl -sfL --connect-timeout 10 --max-time 30 "${RAW_URL}/${module}.sh" -o "${MODULES_DIR}/${module}.sh" 2>/dev/null; then
+        local raw_urls=($(build_download_urls "${GH_RAW_URL}/${module}.sh"))
+        local tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX.sh)
+        if multi_source_download "${tmp_mod}" "${raw_urls[@]}"; then
+            mv "${tmp_mod}" "${MODULES_DIR}/${module}.sh"
             echo "完成"
         else
+            rm -f "${tmp_mod}"
             echo "失败"
             echo "错误: 无法下载模块 ${module}.sh，请检查网络连接"
             return 1
@@ -80,7 +137,12 @@ check_version_update() {
         CURRENT_VERSION=$(grep '^MODULE_VERSION=' "${MODULES_DIR}/core.sh" 2>/dev/null | head -1 | cut -d'"' -f2)
     fi
     local REMOTE_VERSION=""
-    REMOTE_VERSION=$(curl -sf --connect-timeout 5 --max-time 10 "${RAW_URL}/core.sh" 2>/dev/null | grep '^MODULE_VERSION=' | head -1 | cut -d'"' -f2)
+    local raw_urls=($(build_download_urls "${GH_RAW_URL}/core.sh"))
+    local tmp_ver=$(mktemp /tmp/sb-ver.XXXXXX)
+    if multi_source_download "${tmp_ver}" "${raw_urls[@]}"; then
+        REMOTE_VERSION=$(grep '^MODULE_VERSION=' "${tmp_ver}" 2>/dev/null | head -1 | cut -d'"' -f2)
+        rm -f "${tmp_ver}"
+    fi
 
     if [[ -n "$REMOTE_VERSION" && "$REMOTE_VERSION" != "$CURRENT_VERSION" ]]; then
         echo "[引导] 检测到模块更新 (本地: ${CURRENT_VERSION:-未知} → 远程: ${REMOTE_VERSION})，正在更新..."
@@ -96,6 +158,7 @@ if [[ ! -d "$MODULES_DIR" ]]; then
         echo "[引导] Releases 下载失败，回退到逐个下载..."
         if ! download_modules_raw; then
             echo "错误: 所有下载方式均失败，请检查网络连接"
+            echo "提示: 国内机器可设置镜像: GH_MIRROR=https://ghfast.top bash install.sh"
             exit 1
         fi
     fi
@@ -107,9 +170,13 @@ else
             echo "[引导] Releases 下载失败，回退到逐个下载..."
             for module in core install links dns relay protocols config menu; do
                 echo -n "[引导] 更新模块 ${module}.sh ... "
-                if curl -sfL --connect-timeout 10 --max-time 30 "${RAW_URL}/${module}.sh" -o "${MODULES_DIR}/${module}.sh" 2>/dev/null; then
+                local raw_urls=($(build_download_urls "${GH_RAW_URL}/${module}.sh"))
+                local tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX.sh)
+                if multi_source_download "${tmp_mod}" "${raw_urls[@]}"; then
+                    mv "${tmp_mod}" "${MODULES_DIR}/${module}.sh"
                     echo "完成"
                 else
+                    rm -f "${tmp_mod}"
                     echo "失败（保留旧版本）"
                 fi
             done

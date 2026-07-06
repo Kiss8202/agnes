@@ -577,6 +577,7 @@ SERVER_IP="${SERVER_IP}"
 SERVER_IPV6="${SERVER_IPV6}"
 INBOUND_IP_MODE="${INBOUND_IP_MODE}"
 OUTBOUND_IP_MODE="${OUTBOUND_IP_MODE}"
+GH_MIRROR="${GH_MIRROR}"
 EOF
 }
 
@@ -593,6 +594,7 @@ load_ip_config() {
                 SERVER_IPV6) SERVER_IPV6="$value" ;;
                 INBOUND_IP_MODE) INBOUND_IP_MODE="$value" ;;
                 OUTBOUND_IP_MODE) OUTBOUND_IP_MODE="$value" ;;
+                GH_MIRROR) GH_MIRROR="$value" ;;
             esac
         done < "${IP_CONFIG_FILE}"
     fi
