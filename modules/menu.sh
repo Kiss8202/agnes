@@ -1026,9 +1026,10 @@ main() {
         print_warning "DEBUG 模式已启用，所有命令将被追踪"
     fi
     
-    # 如果脚本不在磁盘上（如 curl|bash 方式运行），先保存到磁盘再重新执行
+    # 如果脚本不在磁盘上（如 bash <(curl ...) 方式运行），保存到磁盘
+    # 不再 exec 重新执行，避免新进程需要重新 source 模块导致函数丢失
     local sb_script="/etc/sing-box/install.sh"
-    if [[ ! -f "${SCRIPT_PATH}" ]]; then
+    if [[ ! -f "${SCRIPT_PATH}" ]] || [[ "$0" == /dev/fd/* ]]; then
         mkdir -p /etc/sing-box
         # 尝试从 BASH_SOURCE 获取
         local script_src="${BASH_SOURCE[0]:-$0}"
@@ -1058,8 +1059,8 @@ main() {
         fi
         if [[ -f "${sb_script}" ]]; then
             chmod +x "${sb_script}"
-            print_success "脚本已保存到 ${sb_script}，重新执行..."
-            exec bash "${sb_script}" "$@"
+            SCRIPT_PATH="${sb_script}"
+            print_success "脚本已保存到 ${sb_script}"
         fi
     fi
     
