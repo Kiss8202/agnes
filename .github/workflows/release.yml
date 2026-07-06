@@ -44,13 +44,14 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
+          NOTES="自动构建 - ${{ steps.ver.outputs.version }}
+
+          使用方法：
+          \`\`\`bash
+          bash <(curl -sfL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh)
+          \`\`\`"
           gh release create "latest" \
             -R "$GITHUB_REPOSITORY" \
             --title "sing-box 管理脚本 ${{ steps.ver.outputs.version }}" \
-            --notes "自动构建 - ${{ steps.ver.outputs.version }}
-
-使用方法：
-\`\`\`bash
-bash <(curl -sfL https://raw.githubusercontent.com/${{ github.repository }}/main/install.sh)
-\`\`\`" \
+            --notes "$NOTES" \
             sb-modules.tar.gz sb-modules.tar.gz.sha256
