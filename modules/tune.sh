@@ -769,10 +769,24 @@ show_tune_status() {
     echo -e "    notsent_lowat:           ${notsent}"
     echo -e "    slow_start_after_idle:   ${slow_start} ${YELLOW}(0=禁用,建议)${NC}"
 
+    # 调用 detect_vps_config 获取建议值，让显示与实际调优逻辑一致
+    detect_vps_config
+    local suggest_backlog_show=$SUGGEST_BACKLOG
+    local suggest_somaxconn_show=$SUGGEST_SOMAXCONN
+    local suggest_swappiness_show=$SUGGEST_SWAPPINESS
+
     echo ""
     echo -e "  ${YELLOW}宽带缓存 / backlog:${NC}"
-    echo -e "    netdev_max_backlog:   ${netdev_backlog} ${YELLOW}(建议 16384)${NC}"
-    echo -e "    somaxconn:            ${somaxconn} ${YELLOW}(建议 8192)${NC}"
+    if [[ "$netdev_backlog" == "$suggest_backlog_show" ]]; then
+        echo -e "    netdev_max_backlog:   ${netdev_backlog} ${GREEN}✓${NC}"
+    else
+        echo -e "    netdev_max_backlog:   ${netdev_backlog} ${YELLOW}(本机建议 ${suggest_backlog_show})${NC}"
+    fi
+    if [[ "$somaxconn" == "$suggest_somaxconn_show" ]]; then
+        echo -e "    somaxconn:            ${somaxconn} ${GREEN}✓${NC}"
+    else
+        echo -e "    somaxconn:            ${somaxconn} ${YELLOW}(本机建议 ${suggest_somaxconn_show})${NC}"
+    fi
     echo -e "    tcp_max_syn_backlog:  ${syn_backlog}"
     echo -e "    tcp_max_tw_buckets:   ${tw_buckets}"
     echo -e "    tcp_tw_reuse:         ${tw_reuse} ${YELLOW}(1=启用,建议)${NC}"
@@ -783,7 +797,11 @@ show_tune_status() {
 
     echo ""
     echo -e "  ${YELLOW}SWAP / 虚拟内存:${NC}"
-    echo -e "    vm.swappiness:              ${swappiness} ${YELLOW}(建议 10)${NC}"
+    if [[ "$swappiness" == "$suggest_swappiness_show" ]]; then
+        echo -e "    vm.swappiness:              ${swappiness} ${GREEN}✓${NC}"
+    else
+        echo -e "    vm.swappiness:              ${swappiness} ${YELLOW}(本机建议 ${suggest_swappiness_show})${NC}"
+    fi
     echo -e "    vm.vfs_cache_pressure:      ${vfs_cache} ${YELLOW}(建议 50)${NC}"
     echo -e "    vm.dirty_ratio:             ${dirty_ratio}%"
     echo -e "    vm.dirty_background_ratio:  ${dirty_bg}%"
