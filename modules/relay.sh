@@ -123,7 +123,25 @@ get_ip() {
         [[ -n "$ipv6" && "$ipv6" =~ ^[0-9a-fA-F:]+$ ]] && break
         ipv6=""
     done
-    
+
+    # 兜底：外网服务都失败时，从本机网卡读取 IP
+    # 注意：网卡上的 IP 通常是内网 IP（NAT 后），仅作最后兜底，并明确提示用户
+    if [[ -z "$ipv4" ]]; then
+        local nic_ipv4=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -vE '^(10\.|172\.(1[6-9]|2[0-9]|3[01])\.|192\.168\.)' | head -1)
+        [[ -z "$nic_ipv4" ]] && nic_ipv4=$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | head -1)
+        if [[ -n "$nic_ipv4" ]]; then
+            ipv4="$nic_ipv4"
+            print_warning "外网 IP 服务不可达，从网卡读取 IP: ${ipv4}"
+            print_warning "如果这是内网 IP，请在主菜单 [出入站配置] 中手动填写公网 IP"
+        fi
+    fi
+    if [[ -z "$ipv6" ]]; then
+        local nic_ipv6=$(ip -6 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1 | grep -vE '^fe80|^fc|^fd' | head -1)
+        if [[ -n "$nic_ipv6" ]]; then
+            ipv6="$nic_ipv6"
+        fi
+    fi
+
     # 显示检测到的 IP
     echo ""
     if [[ -n "$ipv4" ]]; then
@@ -133,10 +151,15 @@ get_ip() {
         echo -e "  ${GREEN}检测到 IPv6:${NC} ${ipv6}"
     fi
     echo ""
-    
+
     # 如果两个都没有，报错退出
     if [[ -z "$ipv4" && -z "$ipv6" ]]; then
         print_error "无法获取服务器 IP 地址"
+        print_info "排查建议："
+        print_info "  1. 检查 DNS: cat /etc/resolv.conf"
+        print_info "  2. 测试连通: ping -c 2 8.8.8.8 && ping -c 2 ifconfig.me"
+        print_info "  3. 检查网卡: ip addr show"
+        print_info "  4. 若网络正常但服务被墙，可设置 GH_MIRROR 后重试"
         exit 1
     fi
     
