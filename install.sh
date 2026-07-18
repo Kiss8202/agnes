@@ -41,6 +41,7 @@ fi
 # GitHub 直连 URL
 GH_RELEASE_URL="https://github.com/${REPO}/releases/download/latest/sb-modules.tar.gz"
 GH_RAW_URL="https://raw.githubusercontent.com/${REPO}/main/modules"
+GH_INSTALL_RAW_URL="https://raw.githubusercontent.com/${REPO}/main/install.sh"
 
 # 国内镜像列表（镜像前缀 + GitHub 原始 URL = 镜像 URL）
 # 格式：镜像会拼接原始 GitHub URL，如 https://ghfast.top/https://github.com/...
@@ -151,6 +152,45 @@ check_version_update() {
     return 1  # 不需要更新
 }
 
+# 自更新 install.sh 引导脚本本身（避免引导脚本与新模块版本不一致导致函数丢失）
+# 用法: self_update_install
+self_update_install() {
+    # 只更新已经在磁盘上的 install.sh；bash <(curl) 方式运行的跳过（让主函数处理保存）
+    local self_path="${SCRIPT_PATH:-/etc/sing-box/install.sh}"
+    if [[ ! -f "$self_path" ]] || [[ "$self_path" == /dev/fd/* ]]; then
+        return 0
+    fi
+
+    local install_urls=($(build_download_urls "$GH_INSTALL_RAW_URL"))
+    local tmp_install=$(mktemp /tmp/sb-install.XXXXXX.sh)
+    if ! multi_source_download "$tmp_install" "${install_urls[@]}"; then
+        rm -f "$tmp_install"
+        echo "[引导] install.sh 自更新下载失败，继续使用本地版本"
+        return 0
+    fi
+
+    # 校验下载内容：必须是 bash 脚本且包含 MODULES_DIR 标志
+    if ! head -1 "$tmp_install" | grep -q '^#!' || ! grep -q 'MODULES_DIR=' "$tmp_install" 2>/dev/null; then
+        echo "[引导] 下载的 install.sh 校验失败，跳过自更新"
+        rm -f "$tmp_install"
+        return 0
+    fi
+
+    # 内容未变化则跳过（避免无意义的 exec 重新执行）
+    local old_md5=$(md5sum "$self_path" 2>/dev/null | awk '{print $1}')
+    local new_md5=$(md5sum "$tmp_install" 2>/dev/null | awk '{print $1}')
+    if [[ "$old_md5" == "$new_md5" ]]; then
+        rm -f "$tmp_install"
+        return 0
+    fi
+
+    # 替换并重新执行
+    mv "$tmp_install" "$self_path"
+    chmod +x "$self_path"
+    echo "[引导] install.sh 引导脚本已更新，重新执行以加载新版本..."
+    exec bash "$self_path" "$@"
+}
+
 if [[ ! -d "$MODULES_DIR" ]]; then
     # 模块目录不存在，首次安装
     echo "[引导] 模块目录不存在，正在从 Releases 下载..."
@@ -181,6 +221,8 @@ else
                 fi
             done
         fi
+        # 同步更新 install.sh 本身并重新执行（避免引导脚本与新模块不一致）
+        self_update_install "$@"
     fi
 fi
 
