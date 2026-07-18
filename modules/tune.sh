@@ -229,6 +229,7 @@ apply_bbr_tuning() {
 
 # ==================== VPS 配置检测 ====================
 # 检测当前 VPS 的硬件配置，输出用于交互式调优的参考值
+# 可选参数：$1=带宽(Mbps) $2=RTT(ms)，由用户补充；不传则按内存推算
 detect_vps_config() {
     # 物理内存 (MB)
     local mem_total_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
@@ -247,8 +248,11 @@ detect_vps_config() {
     # 网卡速率 (Mbps)，失败则返回 unknown
     local net_speed="unknown"
     if command -v ethtool >/dev/null 2>&1; then
-        local speed=$(ethtool $(ip route show default 2>/dev/null | awk '{print $5; exit}') 2>/dev/null | awk '/Speed:/{print $2}' | tr -d 'Mb/s')
-        [[ "$speed" =~ ^[0-9]+$ ]] && net_speed="$speed"
+        local default_if=$(ip route show default 2>/dev/null | awk '{print $5; exit}')
+        if [[ -n "$default_if" ]]; then
+            local speed=$(ethtool "$default_if" 2>/dev/null | awk '/Speed:/{print $2}' | tr -d 'Mb/s')
+            [[ "$speed" =~ ^[0-9]+$ ]] && net_speed="$speed"
+        fi
     fi
 
     # 当前 swap 总量 (MB)
@@ -263,19 +267,50 @@ detect_vps_config() {
     VPS_NET_SPEED=$net_speed
     VPS_SWAP_MB=${swap_total_mb:-0}
 
-    # 根据配置生成建议值
-    # 缓冲区上限：基于 BDP 估算
-    #   小内存(<1G) → 4MB；中内存(1-4G) → 8MB；大内存(>4G) → 16MB
-    if [[ $mem_mb -lt 1024 ]]; then
-        SUGGEST_RMEM_MAX=4194304   # 4MB
-    elif [[ $mem_mb -lt 4096 ]]; then
-        SUGGEST_RMEM_MAX=8388608   # 8MB
-    else
-        SUGGEST_RMEM_MAX=16777216  # 16MB
+    # 用户补充的带宽/RTT（detect_vps_config 不传参时为空，由 interactive_tune 设置）
+    VPS_USER_BANDWIDTH="${1:-${VPS_USER_BANDWIDTH:-}}"
+    VPS_USER_RTT="${2:-${VPS_USER_RTT:-250}}"
+
+    # 估算带宽：优先用用户输入，其次网卡速率，最后按内存推算保守值
+    local eff_bandwidth="$VPS_USER_BANDWIDTH"
+    if [[ -z "$eff_bandwidth" ]]; then
+        if [[ "$VPS_NET_SPEED" != "unknown" && "$VPS_NET_SPEED" =~ ^[0-9]+$ ]]; then
+            eff_bandwidth="$VPS_NET_SPEED"
+        else
+            # 网卡检测失败时按内存推算保守值
+            if [[ $mem_mb -lt 1024 ]]; then
+                eff_bandwidth=100      # 小内存机器一般是 100Mbps 套餐
+            elif [[ $mem_mb -lt 4096 ]]; then
+                eff_bandwidth=500
+            else
+                eff_bandwidth=1000
+            fi
+        fi
     fi
+    VPS_EFF_BANDWIDTH=$eff_bandwidth
+    VPS_EFF_RTT=${VPS_USER_RTT:-250}
+
+    # 缓冲区上限：基于 BDP 估算（带宽 × RTT × 2 倍动态空间）
+    # BDP = bandwidth_mbps × 1000000 × rtt_ms / 1000 / 8 (字节)
+    # 上限 = BDP × 2，但限制在 4MB-64MB 范围
+    local bdp_bytes=$(( eff_bandwidth * 1000000 * VPS_EFF_RTT / 1000 / 8 ))
+    local rmem_suggest=$(( bdp_bytes * 2 ))
+    # 限制范围：4MB - 64MB
+    if [[ $rmem_suggest -lt 4194304 ]]; then
+        rmem_suggest=4194304
+    elif [[ $rmem_suggest -gt 67108864 ]]; then
+        rmem_suggest=67108864
+    fi
+    # 同时受物理内存约束：不超过物理内存的 1/4
+    local mem_limit=$(( mem_mb * 1024 * 1024 / 4 ))
+    if [[ $rmem_suggest -gt $mem_limit ]]; then
+        rmem_suggest=$mem_limit
+    fi
+    # 再次保证下限 4MB
+    [[ $rmem_suggest -lt 4194304 ]] && rmem_suggest=4194304
+    SUGGEST_RMEM_MAX=$rmem_suggest
 
     # backlog：根据 CPU 核心数
-    #   单核 → 4096；2-4 核 → 8192；8+ 核 → 16384
     if [[ $cpu_cores -le 1 ]]; then
         SUGGEST_BACKLOG=4096
     elif [[ $cpu_cores -le 4 ]]; then
@@ -283,21 +318,20 @@ detect_vps_config() {
     else
         SUGGEST_BACKLOG=16384
     fi
-
-    # somaxconn：跟随 backlog
     SUGGEST_SOMAXCONN=$SUGGEST_BACKLOG
 
     # swappiness：内存越大越倾向不用 swap
     if [[ $mem_mb -lt 1024 ]]; then
-        SUGGEST_SWAPPINESS=30   # 小内存适当用 swap
+        SUGGEST_SWAPPINESS=30
     elif [[ $mem_mb -lt 4096 ]]; then
         SUGGEST_SWAPPINESS=20
     else
-        SUGGEST_SWAPPINESS=10   # 大内存基本不用 swap
+        SUGGEST_SWAPPINESS=10
     fi
 }
 
 # 显示 VPS 配置检测结果
+# 末尾询问是否直接用建议值调优
 show_vps_config() {
     detect_vps_config
     echo -e "${CYAN}========================================${NC}"
@@ -310,21 +344,31 @@ show_vps_config() {
     if [[ "$VPS_NET_SPEED" != "unknown" ]]; then
         echo -e "  ${YELLOW}网卡速率:${NC}      ${VPS_NET_SPEED} Mbps"
     else
-        echo -e "  ${YELLOW}网卡速率:${NC}      检测失败（不影响调优，按保守值）"
+        echo -e "  ${YELLOW}网卡速率:${NC}      ${RED}检测失败${NC} ${YELLOW}(虚拟化容器/OpenVZ 通常无法检测)${NC}"
     fi
     echo -e "  ${YELLOW}当前 SWAP:${NC}    ${VPS_SWAP_MB} MB"
     echo ""
+    echo -e "${GREEN}估算线路参数:${NC}"
+    echo -e "  带宽估算: ${GREEN}${VPS_EFF_BANDWIDTH} Mbps${NC} ${YELLOW}(网卡或保守推算，可在交互式调优中修改)${NC}"
+    echo -e "  RTT 假设: ${GREEN}${VPS_EFF_RTT} ms${NC} ${YELLOW}(国际线路默认 250ms，可在交互式调优中修改)${NC}"
+    echo -e "  BDP 估算: $(( VPS_EFF_BANDWIDTH * 1000000 * VPS_EFF_RTT / 1000 / 8 / 1024 )) KB"
+    echo ""
     echo -e "${GREEN}基于此配置的建议调优参数:${NC}"
     echo ""
-    echo -e "  缓冲区上限 (rmem/wmem_max):  $((SUGGEST_RMEM_MAX / 1024 / 1024)) MB"
-    echo -e "  网卡 backlog:                ${SUGGEST_BACKLOG}"
+    echo -e "  缓冲区上限 (rmem/wmem_max):  $((SUGGEST_RMEM_MAX / 1024 / 1024)) MB ${YELLOW}(基于 BDP × 2)${NC}"
+    echo -e "  网卡 backlog:                ${SUGGEST_BACKLOG} ${YELLOW}(基于 CPU 核心数)${NC}"
     echo -e "  somaxconn:                   ${SUGGEST_SOMAXCONN}"
-    echo -e "  vm.swappiness:               ${SUGGEST_SWAPPINESS}"
+    echo -e "  vm.swappiness:               ${SUGGEST_SWAPPINESS} ${YELLOW}(基于内存大小)${NC}"
+    echo ""
+    echo -e "${CYAN}提示:${NC}"
+    echo -e "  - 选择 [1] 交互式调优可补充带宽/RTT 等检测不到的信息，得到更精准的参数"
+    echo -e "  - 直接回车用建议值即可，无需手动输入"
     echo ""
 }
 
 # ==================== 交互式调优 ====================
 # 用户可逐项调整，直接回车用建议值
+# 关键改进：先问带宽/RTT（脚本检测不到的信息），重新算建议值，再让用户调整
 interactive_tune() {
     local kernel_status=$(check_kernel_version)
     if [[ "$kernel_status" == "old" ]]; then
@@ -338,16 +382,59 @@ interactive_tune() {
         return 1
     fi
 
-    # 检测 VPS 配置
+    # 检测 VPS 配置（初次，无用户输入）
     detect_vps_config
 
     echo ""
     menu_header "交互式网络调优"
     echo -e "  ${CYAN}检测到本机配置:${NC}"
     echo -e "    内存: ${GREEN}${VPS_MEM_MB}MB${NC} (可用 ${VPS_MEM_AVAIL_MB}MB)   CPU: ${GREEN}${VPS_CPU_CORES} 核${NC}"
-    echo -e "    磁盘: 总 ${VPS_DISK_TOTAL_GB}GB / 可用 ${VPS_DISK_AVAIL_GB}GB   网卡: ${VPS_NET_SPEED} Mbps"
+    echo -e "    磁盘: 总 ${VPS_DISK_TOTAL_GB}GB / 可用 ${VPS_DISK_AVAIL_GB}GB"
+    if [[ "$VPS_NET_SPEED" != "unknown" ]]; then
+        echo -e "    网卡速率: ${GREEN}${VPS_NET_SPEED} Mbps${NC}"
+    else
+        echo -e "    网卡速率: ${YELLOW}检测失败${NC}（虚拟化容器/OpenVZ 通常无法检测）"
+    fi
     echo ""
-    echo -e "  ${CYAN}按回车使用 [建议值]，或输入自定义数值:${NC}"
+    echo -e "  ${CYAN}===== 第 1 步：补充检测不到的信息（影响缓冲区建议值）=====${NC}"
+    echo -e "  ${YELLOW}带宽和 RTT 是计算 BDP 的关键，直接影响 TCP 缓冲区上限建议值${NC}"
+    echo -e "  ${YELLOW}直接回车使用估算值即可${NC}"
+    echo ""
+
+    # 询问实际带宽（VPS 套餐带宽，跟网卡速率可能不同）
+    local input_bw input_rtt
+    local eff_bw=$VPS_EFF_BANDWIDTH
+    read -p "  实际带宽 [Mbps，建议 ${eff_bw}，范围 10-10000]: " input_bw
+    if [[ -n "$input_bw" ]]; then
+        if ! [[ "$input_bw" =~ ^[0-9]+$ ]] || (( input_bw < 10 || input_bw > 10000 )); then
+            print_error "无效值，使用估算值 ${eff_bw} Mbps"
+        else
+            eff_bw=$input_bw
+        fi
+    fi
+
+    # 询问 RTT（到目标服务器的延迟）
+    local eff_rtt=$VPS_EFF_RTT
+    read -p "  目标 RTT [ms，建议 ${eff_rtt}（国际线路默认 250，亚太 80，欧美 150）]: " input_rtt
+    if [[ -n "$input_rtt" ]]; then
+        if ! [[ "$input_rtt" =~ ^[0-9]+$ ]] || (( input_rtt < 5 || input_rtt > 1000 )); then
+            print_error "无效值，使用默认 ${eff_rtt} ms"
+        else
+            eff_rtt=$input_rtt
+        fi
+    fi
+
+    # 用用户补充的带宽和 RTT 重新计算建议值
+    detect_vps_config "$eff_bw" "$eff_rtt"
+
+    # 显示基于用户输入的 BDP 估算
+    local bdp_kb=$(( eff_bw * 1000000 * eff_rtt / 1000 / 8 / 1024 ))
+    echo ""
+    echo -e "  ${GREEN}基于带宽 ${eff_bw} Mbps × RTT ${eff_rtt} ms 重新计算:${NC}"
+    echo -e "    BDP 估算: ${bdp_kb} KB"
+    echo -e "    建议缓冲区上限: $((SUGGEST_RMEM_MAX / 1024 / 1024)) MB ${YELLOW}(BDP × 2，并受内存约束)${NC}"
+    echo ""
+    echo -e "  ${CYAN}===== 第 2 步：调整其他参数（回车用建议值）=====${NC}"
     echo ""
 
     local input_rmem input_backlog input_somaxconn input_swappiness
@@ -400,6 +487,7 @@ interactive_tune() {
     # 确认
     echo ""
     echo -e "${CYAN}========== 调优参数确认 ==========${NC}"
+    echo -e "  线路: ${eff_bw} Mbps × ${eff_rtt} ms (BDP ${bdp_kb} KB)"
     echo -e "  缓冲区上限:    $((final_rmem / 1024 / 1024)) MB"
     echo -e "  网卡 backlog:   ${final_backlog}"
     echo -e "  somaxconn:      ${final_somaxconn}"
