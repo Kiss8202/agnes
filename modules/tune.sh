@@ -479,10 +479,20 @@ show_tune_status() {
         echo -e "  ${GREEN}自建 swap 文件: ${TUNE_SWAP_FILE}${NC}"
     fi
 
-    # 实时连接信息
-    local bbr_conns=$(ss -tin 2>/dev/null | grep -c bbr 2>/dev/null || echo 0)
-    local cubic_conns=$(ss -tin 2>/dev/null | grep -c cubic 2>/dev/null || echo 0)
-    local reno_conns=$(ss -tin 2>/dev/null | grep -c reno 2>/dev/null || echo 0)
+    # 实时连接信息（仅统计 bbr/cubic/reno 三种拥塞算法）
+    # 用 ss -tiH 强制单行 + head -n1 兜底，避免 grep -c 异常输出破坏 $(( ))
+    local ss_out
+    ss_out=$(ss -tiH 2>/dev/null || true)
+    local bbr_conns=$(echo "$ss_out" | grep -c 'bbr' || true)
+    local cubic_conns=$(echo "$ss_out" | grep -c 'cubic' || true)
+    local reno_conns=$(echo "$ss_out" | grep -c 'reno' || true)
+    # 强制只取第一行（防御性：grep -c 正常只输出一行数字）
+    bbr_conns=$(echo "$bbr_conns" | head -n1 | tr -cd '0-9')
+    cubic_conns=$(echo "$cubic_conns" | head -n1 | tr -cd '0-9')
+    reno_conns=$(echo "$reno_conns" | head -n1 | tr -cd '0-9')
+    bbr_conns=${bbr_conns:-0}
+    cubic_conns=${cubic_conns:-0}
+    reno_conns=${reno_conns:-0}
     local total_conns=$((bbr_conns + cubic_conns + reno_conns))
 
     echo ""
