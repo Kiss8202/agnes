@@ -198,6 +198,8 @@ show_main_menu() {
         echo ""
         echo -e "  ${GREEN}[7]${NC} DNS 配置"
         echo ""
+        echo -e "  ${GREEN}[8]${NC} 网络调优 (BBR/缓冲区)"
+        echo ""
         echo -e "  ${GREEN}[0]${NC} 退出脚本"
         echo ""
 }
@@ -941,7 +943,7 @@ main_menu() {
         load_ip_config
         
         show_main_menu
-        read -p "请选择 [0-7]: " m_choice
+        read -p "请选择 [0-8]: " m_choice
         
         case $m_choice in
             1)
@@ -964,6 +966,9 @@ main_menu() {
                 ;;
             7)
                 dns_config_menu
+                ;;
+            8)
+                tune_menu
                 ;;
             0)
                 print_info "已退出"
@@ -1000,7 +1005,7 @@ setup_sb_shortcut() {
         print_info "模块目录缺失，从 GitHub 下载..."
         mkdir -p /etc/sing-box/modules
         local modules_url="https://raw.githubusercontent.com/Kiss8202/Trae/main/modules"
-        for module in core install links dns relay protocols config menu; do
+        for module in core install links dns relay protocols config tune menu; do
             curl -sfL --connect-timeout 10 --max-time 30 "${modules_url}/${module}.sh" -o "/etc/sing-box/modules/${module}.sh" 2>/dev/null || true
         done
     fi
@@ -1082,6 +1087,9 @@ main() {
     get_ip
     
     setup_sb_shortcut
+
+    # 安装完成后自动应用网络调优（安全第一：仅修改 sysctl，不安装任何软件）
+    auto_tune
     
     # 从配置文件加载节点信息
     if [[ -f "${CONFIG_FILE}" ]]; then

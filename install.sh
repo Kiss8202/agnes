@@ -113,7 +113,7 @@ download_modules_archive() {
 # 逐个下载模块文件（回退方案）
 download_modules_raw() {
     mkdir -p "${MODULES_DIR}"
-    for module in core install links dns relay protocols config menu; do
+    for module in core install links dns relay protocols config tune menu; do
         echo -n "[引导] 下载模块 ${module}.sh ... "
         local raw_urls=($(build_download_urls "${GH_RAW_URL}/${module}.sh"))
         local tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX.sh)
@@ -168,7 +168,7 @@ else
         # 优先从 Releases 下载
         if ! download_modules_archive; then
             echo "[引导] Releases 下载失败，回退到逐个下载..."
-            for module in core install links dns relay protocols config menu; do
+            for module in core install links dns relay protocols config tune menu; do
                 echo -n "[引导] 更新模块 ${module}.sh ... "
                 local raw_urls=($(build_download_urls "${GH_RAW_URL}/${module}.sh"))
                 local tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX.sh)
@@ -192,6 +192,7 @@ source "${MODULES_DIR}/dns.sh"      || { echo "错误: 无法加载 dns.sh"; exi
 source "${MODULES_DIR}/relay.sh"    || { echo "错误: 无法加载 relay.sh"; exit 1; }
 source "${MODULES_DIR}/protocols.sh"|| { echo "错误: 无法加载 protocols.sh"; exit 1; }
 source "${MODULES_DIR}/config.sh"   || { echo "错误: 无法加载 config.sh"; exit 1; }
+source "${MODULES_DIR}/tune.sh"     || { echo "错误: 无法加载 tune.sh"; exit 1; }
 source "${MODULES_DIR}/menu.sh"     || { echo "错误: 无法加载 menu.sh"; exit 1; }
 
 # 启动主函数
