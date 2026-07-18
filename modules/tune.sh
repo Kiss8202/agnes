@@ -101,12 +101,21 @@ backup_sysctl() {
 }
 
 # 生成调优配置文件内容（统一函数，确保 apply_bbr_tuning 和 auto_tune 一致）
+# 可选参数：$1=rmem_max $2=wmem_max $3=backlog $4=somaxconn $5=swappiness
+# 不传或为空则用默认值
 write_tune_conf() {
-    cat > "$TUNE_CONF" << 'EOF'
+    local _rmem_max="${1:-16777216}"
+    local _wmem_max="${2:-16777216}"
+    local _backlog="${3:-16384}"
+    local _somaxconn="${4:-8192}"
+    local _swappiness="${5:-10}"
+
+    cat > "$TUNE_CONF" << EOF
 # ===== sing-box 网络调优 =====
 # 注意：所有参数针对代理服务器场景优化
 # 适用于高延迟、国际线路的代理流量
 # 安全说明：仅修改 sysctl 参数，不安装任何第三方软件
+# 生成时间: $(date)
 
 # ============ 拥塞控制 ============
 # BBR: 基于带宽和RTT模型，比CUBIC在高延迟/丢包线路上表现更好
@@ -116,11 +125,10 @@ net.ipv4.tcp_congestion_control = bbr
 net.core.default_qdisc = fq
 
 # ============ TCP 缓冲区（针对高BDP国际线路）============
-# 16MB 上限足够覆盖 250ms RTT × 500Mbps
-net.core.rmem_max = 16777216
-net.core.wmem_max = 16777216
-net.ipv4.tcp_rmem = 4096 262144 16777216
-net.ipv4.tcp_wmem = 4096 262144 16777216
+net.core.rmem_max = ${_rmem_max}
+net.core.wmem_max = ${_wmem_max}
+net.ipv4.tcp_rmem = 4096 262144 ${_rmem_max}
+net.ipv4.tcp_wmem = 4096 262144 ${_wmem_max}
 
 # 16KB: 减少内核缓冲的小包数量，降低延迟
 net.ipv4.tcp_notsent_lowat = 16384
@@ -135,14 +143,14 @@ net.ipv4.tcp_no_metrics_save = 1
 net.ipv4.tcp_mtu_probing = 1
 
 # ============ 宽带缓存 / backlog（提升突发流量处理）============
-# 网卡接收队列最大长度（默认1000，提到16384应对突发）
-net.core.netdev_max_backlog = 16384
+# 网卡接收队列最大长度（默认1000，提到${_backlog}应对突发）
+net.core.netdev_max_backlog = ${_backlog}
 
 # socket 监听队列上限（代理服务高并发友好）
-net.core.somaxconn = 8192
+net.core.somaxconn = ${_somaxconn}
 
 # SYN 队列上限（防 SYN flood，同时支持高并发握手）
-net.ipv4.tcp_max_syn_backlog = 8192
+net.ipv4.tcp_max_syn_backlog = ${_somaxconn}
 
 # TIME_WAIT 套接字数量上限（默认约4000，代理流量大时容易耗尽）
 net.ipv4.tcp_max_tw_buckets = 55000
@@ -164,7 +172,7 @@ net.ipv4.tcp_fastopen = 3
 
 # ============ SWAP / 虚拟内存 ============
 # 降低 swap 倾向（默认60，代理服务器优先用物理内存）
-vm.swappiness = 10
+vm.swappiness = ${_swappiness}
 
 # 减少 inode/dentry cache 回收压力（默认100，调到50保留更多文件缓存）
 vm.vfs_cache_pressure = 50
@@ -212,6 +220,207 @@ apply_bbr_tuning() {
     if sysctl --system >/dev/null 2>&1; then
         touch "$TUNE_FLAG"
         print_success "网络调优已应用（BBR/缓冲区/宽带缓存/SWAP）"
+        show_tune_status
+    else
+        print_error "sysctl 应用失败，请检查配置"
+        return 1
+    fi
+}
+
+# ==================== VPS 配置检测 ====================
+# 检测当前 VPS 的硬件配置，输出用于交互式调优的参考值
+detect_vps_config() {
+    # 物理内存 (MB)
+    local mem_total_kb=$(grep MemTotal /proc/meminfo 2>/dev/null | awk '{print $2}')
+    local mem_mb=$((mem_total_kb / 1024))
+    # 可用内存
+    local mem_avail_kb=$(grep MemAvailable /proc/meminfo 2>/dev/null | awk '{print $2}')
+    local mem_avail_mb=$((mem_avail_kb / 1024))
+
+    # 磁盘
+    local disk_total_gb=$(df -BG / 2>/dev/null | awk 'NR==2{print $2}' | tr -d 'G')
+    local disk_avail_gb=$(df -BG / 2>/dev/null | awk 'NR==2{print $4}' | tr -d 'G')
+
+    # CPU 核心数
+    local cpu_cores=$(nproc 2>/dev/null || grep -c ^processor /proc/cpuinfo 2>/dev/null || echo 1)
+
+    # 网卡速率 (Mbps)，失败则返回 unknown
+    local net_speed="unknown"
+    if command -v ethtool >/dev/null 2>&1; then
+        local speed=$(ethtool $(ip route show default 2>/dev/null | awk '{print $5; exit}') 2>/dev/null | awk '/Speed:/{print $2}' | tr -d 'Mb/s')
+        [[ "$speed" =~ ^[0-9]+$ ]] && net_speed="$speed"
+    fi
+
+    # 当前 swap 总量 (MB)
+    local swap_total_mb=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}')
+
+    # 输出到全局变量供交互函数使用
+    VPS_MEM_MB=$mem_mb
+    VPS_MEM_AVAIL_MB=$mem_avail_mb
+    VPS_DISK_TOTAL_GB=$disk_total_gb
+    VPS_DISK_AVAIL_GB=$disk_avail_gb
+    VPS_CPU_CORES=$cpu_cores
+    VPS_NET_SPEED=$net_speed
+    VPS_SWAP_MB=${swap_total_mb:-0}
+
+    # 根据配置生成建议值
+    # 缓冲区上限：基于 BDP 估算
+    #   小内存(<1G) → 4MB；中内存(1-4G) → 8MB；大内存(>4G) → 16MB
+    if [[ $mem_mb -lt 1024 ]]; then
+        SUGGEST_RMEM_MAX=4194304   # 4MB
+    elif [[ $mem_mb -lt 4096 ]]; then
+        SUGGEST_RMEM_MAX=8388608   # 8MB
+    else
+        SUGGEST_RMEM_MAX=16777216  # 16MB
+    fi
+
+    # backlog：根据 CPU 核心数
+    #   单核 → 4096；2-4 核 → 8192；8+ 核 → 16384
+    if [[ $cpu_cores -le 1 ]]; then
+        SUGGEST_BACKLOG=4096
+    elif [[ $cpu_cores -le 4 ]]; then
+        SUGGEST_BACKLOG=8192
+    else
+        SUGGEST_BACKLOG=16384
+    fi
+
+    # somaxconn：跟随 backlog
+    SUGGEST_SOMAXCONN=$SUGGEST_BACKLOG
+
+    # swappiness：内存越大越倾向不用 swap
+    if [[ $mem_mb -lt 1024 ]]; then
+        SUGGEST_SWAPPINESS=30   # 小内存适当用 swap
+    elif [[ $mem_mb -lt 4096 ]]; then
+        SUGGEST_SWAPPINESS=20
+    else
+        SUGGEST_SWAPPINESS=10   # 大内存基本不用 swap
+    fi
+}
+
+# 显示 VPS 配置检测结果
+show_vps_config() {
+    detect_vps_config
+    echo -e "${CYAN}========================================${NC}"
+    echo -e "${CYAN}  VPS 配置检测结果${NC}"
+    echo -e "${CYAN}========================================${NC}"
+    echo ""
+    echo -e "  ${YELLOW}物理内存:${NC}      ${VPS_MEM_MB} MB (可用 ${VPS_MEM_AVAIL_MB} MB)"
+    echo -e "  ${YELLOW}磁盘空间:${NC}      总 ${VPS_DISK_TOTAL_GB}GB / 可用 ${VPS_DISK_AVAIL_GB}GB"
+    echo -e "  ${YELLOW}CPU 核心数:${NC}   ${VPS_CPU_CORES}"
+    if [[ "$VPS_NET_SPEED" != "unknown" ]]; then
+        echo -e "  ${YELLOW}网卡速率:${NC}      ${VPS_NET_SPEED} Mbps"
+    else
+        echo -e "  ${YELLOW}网卡速率:${NC}      检测失败（不影响调优，按保守值）"
+    fi
+    echo -e "  ${YELLOW}当前 SWAP:${NC}    ${VPS_SWAP_MB} MB"
+    echo ""
+    echo -e "${GREEN}基于此配置的建议调优参数:${NC}"
+    echo ""
+    echo -e "  缓冲区上限 (rmem/wmem_max):  $((SUGGEST_RMEM_MAX / 1024 / 1024)) MB"
+    echo -e "  网卡 backlog:                ${SUGGEST_BACKLOG}"
+    echo -e "  somaxconn:                   ${SUGGEST_SOMAXCONN}"
+    echo -e "  vm.swappiness:               ${SUGGEST_SWAPPINESS}"
+    echo ""
+}
+
+# ==================== 交互式调优 ====================
+# 用户可逐项调整，直接回车用建议值
+interactive_tune() {
+    local kernel_status=$(check_kernel_version)
+    if [[ "$kernel_status" == "old" ]]; then
+        print_error "内核版本过低（需要 4.9+），当前: $(uname -r)"
+        return 1
+    fi
+
+    local bbr_status=$(check_bbr_available)
+    if [[ "$bbr_status" == "no" ]]; then
+        print_error "BBR 模块不可用"
+        return 1
+    fi
+
+    # 检测 VPS 配置
+    detect_vps_config
+
+    echo ""
+    menu_header "交互式网络调优"
+    echo -e "  ${CYAN}检测到本机配置:${NC}"
+    echo -e "    内存: ${GREEN}${VPS_MEM_MB}MB${NC} (可用 ${VPS_MEM_AVAIL_MB}MB)   CPU: ${GREEN}${VPS_CPU_CORES} 核${NC}"
+    echo -e "    磁盘: 总 ${VPS_DISK_TOTAL_GB}GB / 可用 ${VPS_DISK_AVAIL_GB}GB   网卡: ${VPS_NET_SPEED} Mbps"
+    echo ""
+    echo -e "  ${CYAN}按回车使用 [建议值]，或输入自定义数值:${NC}"
+    echo ""
+
+    local input_rmem input_backlog input_somaxconn input_swappiness
+    local final_rmem=$SUGGEST_RMEM_MAX
+    local final_backlog=$SUGGEST_BACKLOG
+    local final_somaxconn=$SUGGEST_SOMAXCONN
+    local final_swappiness=$SUGGEST_SWAPPINESS
+
+    # 缓冲区上限（MB）
+    local suggest_rmem_mb=$((SUGGEST_RMEM_MAX / 1024 / 1024))
+    read -p "  TCP 缓冲区上限 [MB，建议 ${suggest_rmem_mb}，范围 1-64]: " input_rmem
+    if [[ -n "$input_rmem" ]]; then
+        if ! [[ "$input_rmem" =~ ^[0-9]+$ ]] || (( input_rmem < 1 || input_rmem > 64 )); then
+            print_error "无效值，使用建议值 ${suggest_rmem_mb}MB"
+        else
+            final_rmem=$((input_rmem * 1024 * 1024))
+        fi
+    fi
+
+    # backlog
+    read -p "  网卡 backlog [建议 ${SUGGEST_BACKLOG}，范围 1000-65535]: " input_backlog
+    if [[ -n "$input_backlog" ]]; then
+        if ! [[ "$input_backlog" =~ ^[0-9]+$ ]] || (( input_backlog < 1000 || input_backlog > 65535 )); then
+            print_error "无效值，使用建议值 ${SUGGEST_BACKLOG}"
+        else
+            final_backlog=$input_backlog
+        fi
+    fi
+
+    # somaxconn
+    read -p "  somaxconn [建议 ${SUGGEST_SOMAXCONN}，范围 128-65535]: " input_somaxconn
+    if [[ -n "$input_somaxconn" ]]; then
+        if ! [[ "$input_somaxconn" =~ ^[0-9]+$ ]] || (( input_somaxconn < 128 || input_somaxconn > 65535 )); then
+            print_error "无效值，使用建议值 ${SUGGEST_SOMAXCONN}"
+        else
+            final_somaxconn=$input_somaxconn
+        fi
+    fi
+
+    # swappiness
+    read -p "  vm.swappiness [建议 ${SUGGEST_SWAPPINESS}，范围 0-100]: " input_swappiness
+    if [[ -n "$input_swappiness" ]]; then
+        if ! [[ "$input_swappiness" =~ ^[0-9]+$ ]] || (( input_swappiness < 0 || input_swappiness > 100 )); then
+            print_error "无效值，使用建议值 ${SUGGEST_SWAPPINESS}"
+        else
+            final_swappiness=$input_swappiness
+        fi
+    fi
+
+    # 确认
+    echo ""
+    echo -e "${CYAN}========== 调优参数确认 ==========${NC}"
+    echo -e "  缓冲区上限:    $((final_rmem / 1024 / 1024)) MB"
+    echo -e "  网卡 backlog:   ${final_backlog}"
+    echo -e "  somaxconn:      ${final_somaxconn}"
+    echo -e "  swappiness:     ${final_swappiness}"
+    echo -e "  其他参数:       使用预设值（BBR/fq/tw_reuse/fastopen 等）"
+    echo ""
+
+    if ! confirm "确认应用以上参数？(y/N): "; then
+        print_warning "已取消"
+        return 0
+    fi
+
+    # 备份
+    backup_sysctl
+
+    print_info "应用自定义调优参数..."
+    write_tune_conf "$final_rmem" "$final_rmem" "$final_backlog" "$final_somaxconn" "$final_swappiness"
+
+    if sysctl --system >/dev/null 2>&1; then
+        touch "$TUNE_FLAG"
+        print_success "自定义网络调优已应用"
         show_tune_status
     else
         print_error "sysctl 应用失败，请检查配置"
@@ -524,9 +733,10 @@ auto_tune() {
         return 0
     fi
 
-    # 静默应用调优
+    # 静默应用调优（基于本机配置的建议值）
     backup_sysctl
-    write_tune_conf
+    detect_vps_config
+    write_tune_conf "$SUGGEST_RMEM_MAX" "$SUGGEST_RMEM_MAX" "$SUGGEST_BACKLOG" "$SUGGEST_SOMAXCONN" "$SUGGEST_SWAPPINESS"
 
     if sysctl --system >/dev/null 2>&1; then
         touch "$TUNE_FLAG"
@@ -585,30 +795,40 @@ tune_menu() {
             echo -e "  SWAP: ${YELLOW}未启用${NC}"
         fi
         echo ""
-        echo -e "  ${GREEN}[1]${NC} 一键应用全套调优（BBR+缓冲区+宽带缓存+SWAP参数）"
+        echo -e "  ${GREEN}[1]${NC} 交互式调优 ${YELLOW}(推荐，按本机配置建议值)${NC}"
         echo ""
-        echo -e "  ${GREEN}[2]${NC} 查看详细调优状态"
+        echo -e "  ${GREEN}[2]${NC} 一键应用全套调优（固定默认值，快速）"
         echo ""
-        echo -e "  ${GREEN}[3]${NC} 恢复默认配置"
+        echo -e "  ${GREEN}[3]${NC} 查看详细调优状态"
         echo ""
-        echo -e "  ${GREEN}[4]${NC} 创建/管理自建 swap 文件"
+        echo -e "  ${GREEN}[4]${NC} 恢复默认配置"
+        echo ""
+        echo -e "  ${GREEN}[5]${NC} 创建/管理自建 swap 文件"
+        echo ""
+        echo -e "  ${GREEN}[6]${NC} 仅检测 VPS 配置（不调优）"
         echo ""
         echo -e "  ${GREEN}[0]${NC} 返回主菜单"
         echo ""
-        read -p "请选择 [0-4]: " t_choice
+        read -p "请选择 [0-6]: " t_choice
 
         case $t_choice in
             1)
-                apply_bbr_tuning
+                interactive_tune
                 ;;
             2)
-                show_tune_status
+                apply_bbr_tuning
                 ;;
             3)
-                restore_default_tuning
+                show_tune_status
                 ;;
             4)
+                restore_default_tuning
+                ;;
+            5)
                 swap_file_menu
+                ;;
+            6)
+                show_vps_config
                 ;;
             0)
                 break
