@@ -258,6 +258,18 @@ detect_vps_config() {
     # 当前 swap 总量 (MB)
     local swap_total_mb=$(free -m 2>/dev/null | awk '/^Swap:/{print $2}')
 
+    # 容器检测（OpenVZ/LXC 看到的可能是宿主机内存，需提示用户）
+    local is_container=0
+    if [[ -f /proc/1/environ ]] && grep -qaE 'container=lxc|container=lxcfs' /proc/1/environ 2>/dev/null; then
+        is_container=1
+    elif [[ -f /proc/user_beancounters ]]; then
+        is_container=1   # OpenVZ
+    elif grep -qaE '/(docker|lxc|kubepods)/' /proc/1/cgroup 2>/dev/null; then
+        is_container=1
+    elif [[ -f /.dockerenv ]]; then
+        is_container=1
+    fi
+
     # 输出到全局变量供交互函数使用
     VPS_MEM_MB=$mem_mb
     VPS_MEM_AVAIL_MB=$mem_avail_mb
@@ -266,6 +278,7 @@ detect_vps_config() {
     VPS_CPU_CORES=$cpu_cores
     VPS_NET_SPEED=$net_speed
     VPS_SWAP_MB=${swap_total_mb:-0}
+    VPS_IS_CONTAINER=$is_container
 
     # 用户补充的带宽/RTT（detect_vps_config 不传参时为空，由 interactive_tune 设置）
     VPS_USER_BANDWIDTH="${1:-${VPS_USER_BANDWIDTH:-}}"
@@ -321,12 +334,25 @@ detect_vps_config() {
     SUGGEST_SOMAXCONN=$SUGGEST_BACKLOG
 
     # swappiness：内存越大越倾向不用 swap
+    # 分档说明：
+    #   < 1G   → 40  小鸡容易 OOM，更敢用 swap 兜底
+    #   1-2G   → 30  小内存仍需 swap 防 OOM
+    #   2-4G   → 20  中等内存，轻度用 swap
+    #   > 4G   → 10  内存够，几乎不用 swap
     if [[ $mem_mb -lt 1024 ]]; then
+        SUGGEST_SWAPPINESS=40
+    elif [[ $mem_mb -lt 2048 ]]; then
         SUGGEST_SWAPPINESS=30
     elif [[ $mem_mb -lt 4096 ]]; then
         SUGGEST_SWAPPINESS=20
     else
         SUGGEST_SWAPPINESS=10
+    fi
+
+    # 容器环境兜底：OpenVZ/LXC 看到的可能是宿主机内存
+    # 如果用户在容器里但脚本看到 >4G，仍保守建议 30
+    if [[ $is_container -eq 1 && $mem_mb -ge 4096 ]]; then
+        SUGGEST_SWAPPINESS=30
     fi
 }
 
@@ -338,6 +364,13 @@ show_vps_config() {
     echo -e "${CYAN}  VPS 配置检测结果${NC}"
     echo -e "${CYAN}========================================${NC}"
     echo ""
+    # 容器环境特殊提示
+    if [[ $VPS_IS_CONTAINER -eq 1 ]]; then
+        echo -e "  ${RED}[!] 检测到容器/OpenVZ 环境${NC}"
+        echo -e "  ${YELLOW}    内存/CPU 数值可能反映的是宿主机资源${NC}"
+        echo -e "  ${YELLOW}    如与套餐不符，请用交互式调优手动指定${NC}"
+        echo ""
+    fi
     echo -e "  ${YELLOW}物理内存:${NC}      ${VPS_MEM_MB} MB (可用 ${VPS_MEM_AVAIL_MB} MB)"
     echo -e "  ${YELLOW}磁盘空间:${NC}      总 ${VPS_DISK_TOTAL_GB}GB / 可用 ${VPS_DISK_AVAIL_GB}GB"
     echo -e "  ${YELLOW}CPU 核心数:${NC}   ${VPS_CPU_CORES}"
