@@ -321,8 +321,8 @@ _modify_menu_Hysteria2() {
                 if [[ -z "$new_sni" ]]; then
                     new_sni=$(get_random_sni)
                 fi
-                jq_update_config --arg tag "$tag" --arg sni "$new_sni" \
-                    '(.inbounds[] | select(.tag == $tag)) |= (.tls.server_name = $sni | .tls.certificate_path = ($sni | "/etc/sing-box/certs/\(.)" + "/cert.pem") | .tls.key_path = ($sni | "/etc/sing-box/certs/\(.)" + "/private.key"))'
+                jq_update_config --arg tag "$tag" --arg sni "$new_sni" --arg certdir "$CERT_DIR" \
+                    '(.inbounds[] | select(.tag == $tag)) |= (.tls.server_name = $sni | .tls.certificate_path = ($sni | $certdir + "/" + . + "/cert.pem") | .tls.key_path = ($sni | $certdir + "/" + . + "/private.key"))'
                 gen_cert_for_sni "${new_sni}"
                 INBOUND_SNIS[$array_idx]="$new_sni"
                 current_sni="$new_sni"
@@ -514,8 +514,8 @@ _modify_menu_HTTPS() {
                 if [[ -z "$new_sni" ]]; then
                     new_sni=$(get_random_sni)
                 fi
-                jq_update_config --arg tag "$tag" --arg sni "$new_sni" \
-                    '(.inbounds[] | select(.tag == $tag)) |= (.tls.server_name = $sni | .tls.certificate_path = ($sni | "/etc/sing-box/certs/\(.)" + "/cert.pem") | .tls.key_path = ($sni | "/etc/sing-box/certs/\(.)" + "/private.key"))'
+                jq_update_config --arg tag "$tag" --arg sni "$new_sni" --arg certdir "$CERT_DIR" \
+                    '(.inbounds[] | select(.tag == $tag)) |= (.tls.server_name = $sni | .tls.certificate_path = ($sni | $certdir + "/" + . + "/cert.pem") | .tls.key_path = ($sni | $certdir + "/" + . + "/private.key"))'
                 gen_cert_for_sni "${new_sni}"
                 INBOUND_SNIS[$array_idx]="$new_sni"
                 current_sni="$new_sni"
@@ -677,23 +677,23 @@ delete_single_node() {
     # 从配置文件中删除节点
     if [[ -f "${CONFIG_FILE}" ]] && command -v jq &>/dev/null; then
         print_info "从配置文件删除节点..."
-        
-        # 使用 jq 过滤掉要删除的节点
-        local temp_config=$(mktemp)
-        
+
+        # 使用 jq 原子更新（jq_update_config 会校验非空 + 原子替换）
         # 如果是 ShadowTLS，需要同时删除对应的 shadowsocks-in 节点
         if [[ "$proto" == "ShadowTLS v3" ]]; then
             local ss_tag="shadowsocks-in-${port}"
-            jq --arg tag "$tag" --arg ss_tag "$ss_tag" '.inbounds |= map(select(.tag != $tag and .tag != $ss_tag))' "${CONFIG_FILE}" > "$temp_config"
+            jq_update_config --arg tag "$tag" --arg ss_tag "$ss_tag" \
+                '.inbounds |= map(select(.tag != $tag and .tag != $ss_tag))' \
+                || { print_error "删除节点失败"; return 1; }
         else
-            jq --arg tag "$tag" '.inbounds |= map(select(.tag != $tag))' "${CONFIG_FILE}" > "$temp_config"
+            jq_update_config --arg tag "$tag" \
+                '.inbounds |= map(select(.tag != $tag))' \
+                || { print_error "删除节点失败"; return 1; }
         fi
-        
-        mv "$temp_config" "${CONFIG_FILE}"
-        
+
         # 从数组中删除
         remove_inbound_by_index "$index"
-        
+
         # 重新加载配置
         load_inbounds_from_config
         

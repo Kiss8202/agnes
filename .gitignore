@@ -1,0 +1,20 @@
+# 临时文件
+*.tmp
+*.bak
+*.swp
+*.swo
+*~
+.DS_Store
+
+# 凭证文件（绝对不能提交）
+.git_cred_tmp.txt
+*.cred
+*credentials*
+
+# 构建产物
+sb-modules.tar.gz
+sb-modules.tar.gz.sha256
+
+# 本地测试残留
+/tmp/sb-*
+.audit/

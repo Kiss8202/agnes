@@ -152,7 +152,7 @@ get_ip() {
     fi
     echo ""
 
-    # 如果两个都没有，报错退出
+    # 如果两个都没有，报错返回（不 exit，让调用方决定是否终止）
     if [[ -z "$ipv4" && -z "$ipv6" ]]; then
         print_error "无法获取服务器 IP 地址"
         print_info "排查建议："
@@ -160,7 +160,7 @@ get_ip() {
         print_info "  2. 测试连通: ping -c 2 8.8.8.8 && ping -c 2 ifconfig.me"
         print_info "  3. 检查网卡: ip addr show"
         print_info "  4. 若网络正常但服务被墙，可设置 GH_MIRROR 后重试"
-        exit 1
+        return 1
     fi
     
     # 优先使用 IPv4，没有 IPv4 时使用 IPv6
@@ -221,7 +221,8 @@ get_random_free_port() {
     local max_attempts=100
     local attempt=0
     while (( attempt < max_attempts )); do
-        port=$((RANDOM % 55536 + 10000))  # 10000-65535
+        # 用 /dev/urandom 生成 10000-65535 范围的端口（$RANDOM 只到 32767，范围不足）
+        port=$(( ( $(od -An -tu2 -N2 /dev/urandom 2>/dev/null || echo $RANDOM$RANDOM) % 55536 ) + 10000 ))
         if ! check_port_in_use "$port"; then
             echo "$port"
             return 0
@@ -327,11 +328,11 @@ parse_socks_link() {
         relay_json="{
   \"type\": \"socks\",
   \"tag\": \"${tag}\",
-  \"server\": \"${server}\",
+  \"server\": \"$(json_escape "$server")\",
   \"server_port\": ${port},
   \"version\": \"5\",
-  \"username\": \"${username}\",
-  \"password\": \"${password}\"
+  \"username\": \"$(json_escape "$username")\",
+  \"password\": \"$(json_escape "$password")\"
 }"
         if [[ -n "$custom_desc" ]]; then
             relay_desc="$custom_desc"
@@ -352,7 +353,7 @@ parse_socks_link() {
         relay_json="{
   \"type\": \"socks\",
   \"tag\": \"${tag}\",
-  \"server\": \"${server}\",
+  \"server\": \"$(json_escape "$server")\",
   \"server_port\": ${port},
   \"version\": \"5\"
 }"
@@ -393,13 +394,16 @@ parse_http_link() {
         local server="${_sp[0]}"
         local port="${_sp[1]}"
         
+        local esc_server=$(json_escape "$server")
+        local esc_username=$(json_escape "$username")
+        local esc_password=$(json_escape "$password")
         relay_json="{
   \"type\": \"http\",
   \"tag\": \"${tag}\",
-  \"server\": \"${server}\",
+  \"server\": \"${esc_server}\",
   \"server_port\": ${port},
-  \"username\": \"${username}\",
-  \"password\": \"${password}\",
+  \"username\": \"${esc_username}\",
+  \"password\": \"${esc_password}\",
   \"tls\": {\"enabled\": ${tls}}
 }"
         if [[ -n "$custom_desc" ]]; then
@@ -416,7 +420,7 @@ parse_http_link() {
         relay_json="{
   \"type\": \"http\",
   \"tag\": \"${tag}\",
-  \"server\": \"${server}\",
+  \"server\": \"$(json_escape "$server")\",
   \"server_port\": ${port},
   \"tls\": {\"enabled\": ${tls}}
 }"
@@ -460,10 +464,10 @@ parse_ss_link() {
         local relay_json="{
   \"type\": \"shadowsocks\",
   \"tag\": \"${tag}\",
-  \"server\": \"${server}\",
+  \"server\": \"$(json_escape "$server")\",
   \"server_port\": ${port},
-  \"method\": \"${method}\",
-  \"password\": \"${password}\"
+  \"method\": \"$(json_escape "$method")\",
+  \"password\": \"$(json_escape "$password")\"
 }"
         local relay_desc
         if [[ -n "$custom_desc" ]]; then
@@ -517,7 +521,7 @@ parse_vmess_link() {
     if [[ "$net" == "ws" ]]; then
         local ws_headers=""
         if [[ -n "$host" ]]; then
-            ws_headers=", \"headers\": {\"Host\": \"${host}\"}"
+            ws_headers=", \"headers\": {\"Host\": \"$(json_escape "$host")\"}"
         fi
         local ws_path="/"
         if [[ -n "$path" ]]; then
@@ -526,24 +530,24 @@ parse_vmess_link() {
         transport_config=",
   \"transport\": {
     \"type\": \"ws\",
-    \"path\": \"${ws_path}\"${ws_headers}
+    \"path\": \"$(json_escape "$ws_path")\"${ws_headers}
   }"
     elif [[ "$net" == "grpc" ]]; then
         local service_name=$(echo "$json" | jq -r '.path // ""')
         transport_config=",
   \"transport\": {
     \"type\": \"grpc\",
-    \"service_name\": \"${service_name}\"
+    \"service_name\": \"$(json_escape "$service_name")\"
   }"
     elif [[ "$net" == "http" || "$net" == "h2" ]]; then
         local h2_path="/"
         [[ -n "$path" ]] && h2_path="$path"
         local h2_host=""
-        [[ -n "$host" ]] && h2_host=", \"host\": [\"${host}\"]"
+        [[ -n "$host" ]] && h2_host=", \"host\": [\"$(json_escape "$host")\"]"
         transport_config=",
   \"transport\": {
     \"type\": \"http\",
-    \"path\": \"${h2_path}\"${h2_host}
+    \"path\": \"$(json_escape "$h2_path")\"${h2_host}
   }"
     fi
     
@@ -552,9 +556,9 @@ parse_vmess_link() {
     if [[ "$tls" == "tls" ]]; then
         local sni_config=""
         if [[ -n "$sni" ]]; then
-            sni_config=", \"server_name\": \"${sni}\""
+            sni_config=", \"server_name\": \"$(json_escape "$sni")\""
         elif [[ -n "$host" ]]; then
-            sni_config=", \"server_name\": \"${host}\""
+            sni_config=", \"server_name\": \"$(json_escape "$host")\""
         fi
         local alpn_config=""
         if [[ -n "$alpn" ]]; then
@@ -571,11 +575,11 @@ parse_vmess_link() {
     local relay_json="{
   \"type\": \"vmess\",
   \"tag\": \"${tag}\",
-  \"server\": \"${server}\",
+  \"server\": \"$(json_escape "$server")\",
   \"server_port\": ${port},
-  \"uuid\": \"${uuid}\",
+  \"uuid\": \"$(json_escape "$uuid")\",
   \"alter_id\": ${alterId},
-  \"security\": \"${security}\"${transport_config}${tls_config}
+  \"security\": \"$(json_escape "$security")\"${transport_config}${tls_config}
 }"
     local relay_desc
     if [[ -n "$custom_desc" ]]; then
@@ -638,7 +642,7 @@ parse_vless_link() {
         tls_config=",
   \"tls\": {
     \"enabled\": true,
-    \"server_name\": \"${sni}\",
+    \"server_name\": \"$(json_escape "$sni")\",
     \"alpn\": [\"h2\", \"http/1.1\"],
     \"min_version\": \"1.3\",
     \"utls\": {\"enabled\": true, \"fingerprint\": \"chrome\"}
@@ -651,32 +655,32 @@ parse_vless_link() {
         reality_config=",
   \"tls\": {
     \"enabled\": true,
-    \"server_name\": \"${sni}\",
+    \"server_name\": \"$(json_escape "$sni")\",
     \"min_version\": \"1.3\",
     \"utls\": {\"enabled\": true, \"fingerprint\": \"chrome\"},
     \"reality\": {
       \"enabled\": true,
-      \"public_key\": \"${pbk}\",
-      \"short_id\": \"${sid}\"
+      \"public_key\": \"$(json_escape "$pbk")\",
+      \"short_id\": \"$(json_escape "$sid")\"
     }
   }"
     fi
 
     local flow_config=""
     [[ -n "$flow" ]] && flow_config=",
-  \"flow\": \"${flow}\""
+  \"flow\": \"$(json_escape "$flow")\""
 
     local encryption_config=""
     [[ "$encryption" != "none" ]] && encryption_config=",
-  \"encryption\": \"${encryption}\""
+  \"encryption\": \"$(json_escape "$encryption")\""
 
     local tag="relay-vless-${#RELAY_TAGS[@]}"
     local relay_json="{
   \"type\": \"vless\",
   \"tag\": \"${tag}\",
-  \"server\": \"${server}\",
+  \"server\": \"$(json_escape "$server")\",
   \"server_port\": ${port},
-  \"uuid\": \"${uuid}\"${encryption_config}${flow_config}${tls_config}${reality_config}
+  \"uuid\": \"$(json_escape "$uuid")\"${encryption_config}${flow_config}${tls_config}${reality_config}
 }"
 
     local relay_desc
@@ -741,13 +745,13 @@ parse_trojan_link() {
     # 构建 TLS 配置
     local sni_config=""
     if [[ -n "$sni" ]]; then
-        sni_config=", \"server_name\": \"${sni}\""
+        sni_config=", \"server_name\": \"$(json_escape "$sni")\""
     elif [[ -n "$host" ]]; then
-        sni_config=", \"server_name\": \"${host}\""
+        sni_config=", \"server_name\": \"$(json_escape "$host")\""
     fi
     local utls_config=""
     if [[ -n "$fp" ]]; then
-        utls_config=", \"utls\": {\"enabled\": true, \"fingerprint\": \"${fp}\"}"
+        utls_config=", \"utls\": {\"enabled\": true, \"fingerprint\": \"$(json_escape "$fp")\"}"
     fi
     local tls_config=",
   \"tls\": {
@@ -762,20 +766,20 @@ parse_trojan_link() {
     if [[ "$net" == "ws" ]]; then
         local ws_headers=""
         if [[ -n "$host" ]]; then
-            ws_headers=", \"headers\": {\"Host\": \"${host}\"}"
+            ws_headers=", \"headers\": {\"Host\": \"$(json_escape "$host")\"}"
         fi
         local ws_path="/"
         [[ -n "$path" ]] && ws_path="$path"
         transport_config=",
   \"transport\": {
     \"type\": \"ws\",
-    \"path\": \"${ws_path}\"${ws_headers}
+    \"path\": \"$(json_escape "$ws_path")\"${ws_headers}
   }"
     elif [[ "$net" == "grpc" ]]; then
         transport_config=",
   \"transport\": {
     \"type\": \"grpc\",
-    \"service_name\": \"${path}\"
+    \"service_name\": \"$(json_escape "$path")\"
   }"
     fi
     
@@ -783,9 +787,9 @@ parse_trojan_link() {
     local relay_json="{
   \"type\": \"trojan\",
   \"tag\": \"${tag}\",
-  \"server\": \"${server}\",
+  \"server\": \"$(json_escape "$server")\",
   \"server_port\": ${port},
-  \"password\": \"${password}\"${tls_config}${transport_config}
+  \"password\": \"$(json_escape "$password")\"${tls_config}${transport_config}
 }"
     local relay_desc
     if [[ -n "$custom_desc" ]]; then
@@ -858,7 +862,7 @@ parse_hysteria2_link() {
     # 构建 tls 配置
     local tls_config="{
     \"enabled\": true,
-    \"server_name\": \"${sni}\",
+    \"server_name\": \"$(json_escape "$sni")\",
     \"alpn\": [\"h3\"],
     \"min_version\": \"1.3\",
     \"insecure\": ${insecure_bool}
@@ -868,7 +872,7 @@ parse_hysteria2_link() {
         obfs_config=",
   \"obfs\": {
     \"type\": \"salamander\",
-    \"password\": \"${obfs_password}\"
+    \"password\": \"$(json_escape "$obfs_password")\"
   }"
     fi
 
@@ -876,9 +880,9 @@ parse_hysteria2_link() {
     local relay_json="{
   \"type\": \"hysteria2\",
   \"tag\": \"${tag}\",
-  \"server\": \"${server}\",
+  \"server\": \"$(json_escape "$server")\",
   \"server_port\": ${port},
-  \"password\": \"${password}\",
+  \"password\": \"$(json_escape "$password")\",
   \"tls\": ${tls_config}${obfs_config}
 }"
 
@@ -952,24 +956,24 @@ parse_anytls_link() {
         fi
         local utls_config=""
         if [[ -n "$fp" ]]; then
-            utls_config=", \"utls\": {\"enabled\": true, \"fingerprint\": \"${fp}\"}"
+            utls_config=", \"utls\": {\"enabled\": true, \"fingerprint\": \"$(json_escape "$fp")\"}"
         fi
         tls_config=",
   \"tls\": {
     \"enabled\": true,
-    \"server_name\": \"${sni}\"${utls_config},
+    \"server_name\": \"$(json_escape "$sni")\"${utls_config},
     \"min_version\": \"1.3\",
     \"reality\": {
       \"enabled\": true,
-      \"public_key\": \"${pbk}\",
-      \"short_id\": \"${sid}\"
+      \"public_key\": \"$(json_escape "$pbk")\",
+      \"short_id\": \"$(json_escape "$sid")\"
     }
   }"
     else
         tls_config=",
   \"tls\": {
     \"enabled\": true,
-    \"server_name\": \"${sni}\",
+    \"server_name\": \"$(json_escape "$sni")\",
     \"alpn\": [\"h2\", \"http/1.1\"],
     \"min_version\": \"1.3\",
     \"insecure\": ${insecure_bool}
@@ -987,9 +991,9 @@ parse_anytls_link() {
     local relay_json="{
   \"type\": \"anytls\",
   \"tag\": \"${tag}\",
-  \"server\": \"${server}\",
+  \"server\": \"$(json_escape "$server")\",
   \"server_port\": ${port},
-  \"password\": \"${password}\"${padding_config}${tls_config}
+  \"password\": \"$(json_escape "$password")\"${padding_config}${tls_config}
 }"
 
     local relay_desc
@@ -1367,19 +1371,24 @@ setup_relay() {
                     # 从解析结果中提取新JSON和新描述
                     local new_json="${RELAY_JSONS[0]}"
                     local new_desc="${RELAY_DESCS[0]}"
-                    
-                    # 将新JSON中的tag替换为原tag
+
+                    # 用 jq 精确替换 tag 字段（避免 sed 全局替换误伤 server/password/path 等）
                     local new_tag="${RELAY_TAGS[0]}"
-                    new_json=$(echo "$new_json" | sed "s/\"${new_tag}\"/\"${old_tag}\"/g")
-                    
+                    if command -v jq &>/dev/null; then
+                        new_json=$(echo "$new_json" | jq -c --arg oldtag "$old_tag" '.tag = $oldtag' 2>/dev/null || echo "$new_json")
+                    else
+                        # jq 不可用时回退到 sed（仅替换 .tag 字段附近，减少误伤）
+                        new_json=$(echo "$new_json" | sed "s/\"tag\":\"${new_tag}\"/\"tag\":\"${old_tag}\"/g")
+                    fi
+
                     # 恢复原数组，替换指定位置
                     RELAY_TAGS=("${tmp_tags[@]}")
                     RELAY_JSONS=("${tmp_jsons[@]}")
                     RELAY_DESCS=("${tmp_descs[@]}")
-                    
+
                     RELAY_JSONS[$e]="$new_json"
                     RELAY_DESCS[$e]="$new_desc"
-                    
+
                     save_relays_to_file
                     print_success "中转已修改: ${old_desc} → ${new_desc}"
                     

@@ -72,7 +72,7 @@ install_singbox() {
             print_warning "获取版本信息失败，重试 ${retry}/${max_retries}..."
             [[ $retry -lt $max_retries ]] && sleep 3
         done
-        [[ -z "$LATEST" ]] && LATEST="1.12.0"
+        [[ -z "$LATEST" ]] && LATEST="1.13.12"
         print_info "目标版本: ${LATEST}"
 
         # 清理可能残留的半成品
@@ -81,14 +81,14 @@ install_singbox() {
 
         print_info "下载 sing-box (${LATEST} linux-${ARCH}) ..."
         local download_url="https://github.com/SagerNet/sing-box/releases/download/v${LATEST}/sing-box-${LATEST}-linux-${ARCH}.tar.gz"
-        wget -q --show-progress -O /tmp/sb.tar.gz "$download_url" 2>&1
-        if [[ ! -f /tmp/sb.tar.gz ]] || [[ ! -s /tmp/sb.tar.gz ]]; then
+        if ! wget -q --show-progress -O /tmp/sb.tar.gz "$download_url" 2>&1 || [[ ! -f /tmp/sb.tar.gz ]] || [[ ! -s /tmp/sb.tar.gz ]]; then
             print_error "下载失败，请检查网络后重新运行脚本"
             return 1
         fi
         # 验证下载的是 tar.gz 而非 404 HTML 页面
         if command -v file &>/dev/null; then
-            local file_type=$(file -b /tmp/sb.tar.gz 2>/dev/null)
+            local file_type
+            file_type=$(file -b /tmp/sb.tar.gz 2>/dev/null)
             if [[ "$file_type" != *"gzip"* ]]; then
                 print_error "下载的文件无效（可能是版本 ${LATEST} 不存在），尝试使用已知稳定版本"
                 rm -f /tmp/sb.tar.gz
@@ -96,8 +96,7 @@ install_singbox() {
                 LATEST="1.13.12"
                 download_url="https://github.com/SagerNet/sing-box/releases/download/v${LATEST}/sing-box-${LATEST}-linux-${ARCH}.tar.gz"
                 print_info "回退下载 sing-box (${LATEST} linux-${ARCH}) ..."
-                wget -q --show-progress -O /tmp/sb.tar.gz "$download_url" 2>&1
-                if [[ ! -f /tmp/sb.tar.gz ]] || [[ ! -s /tmp/sb.tar.gz ]]; then
+                if ! wget -q --show-progress -O /tmp/sb.tar.gz "$download_url" 2>&1 || [[ ! -f /tmp/sb.tar.gz ]] || [[ ! -s /tmp/sb.tar.gz ]]; then
                     print_error "下载失败，请检查网络后重新运行脚本"
                     return 1
                 fi
@@ -116,12 +115,31 @@ install_singbox() {
                 LATEST="1.13.12"
                 download_url="https://github.com/SagerNet/sing-box/releases/download/v${LATEST}/sing-box-${LATEST}-linux-${ARCH}.tar.gz"
                 print_info "回退下载 sing-box (${LATEST} linux-${ARCH}) ..."
-                wget -q --show-progress -O /tmp/sb.tar.gz "$download_url" 2>&1
-                if [[ ! -f /tmp/sb.tar.gz ]] || [[ ! -s /tmp/sb.tar.gz ]]; then
+                if ! wget -q --show-progress -O /tmp/sb.tar.gz "$download_url" 2>&1 || [[ ! -f /tmp/sb.tar.gz ]] || [[ ! -s /tmp/sb.tar.gz ]]; then
                     print_error "下载失败，请检查网络后重新运行脚本"
                     return 1
                 fi
             fi
+        fi
+
+        # 下载并校验 sha256（失败不强制阻断，因为部分镜像可能不支持 .sha256 文件下载）
+        local sha256_url="https://github.com/SagerNet/sing-box/releases/download/v${LATEST}/sing-box-${LATEST}-linux-${ARCH}.tar.gz.sha256"
+        if curl -sf --connect-timeout 10 --max-time 30 -o /tmp/sb.tar.gz.sha256 "$sha256_url" 2>/dev/null && [[ -s /tmp/sb.tar.gz.sha256 ]]; then
+            local expected_hash
+            expected_hash=$(awk '{print $1}' /tmp/sb.tar.gz.sha256)
+            local actual_hash
+            actual_hash=$(sha256sum /tmp/sb.tar.gz | awk '{print $1}')
+            if [[ -n "$expected_hash" && "$expected_hash" == "$actual_hash" ]]; then
+                print_success "sha256 校验通过"
+                rm -f /tmp/sb.tar.gz.sha256
+            else
+                print_error "sha256 校验失败（期望: ${expected_hash}, 实际: ${actual_hash}）"
+                rm -f /tmp/sb.tar.gz.sha256
+                return 1
+            fi
+        else
+            print_warning "无法下载 sha256 校验文件，跳过校验（继续执行）"
+            rm -f /tmp/sb.tar.gz.sha256
         fi
 
         # 小内存机器解压时很可能被杀，解压前确保文件完整
@@ -141,7 +159,8 @@ install_singbox() {
 
             # 验证安装后的二进制是否可执行
             if ${INSTALL_DIR}/sing-box version >/dev/null 2>&1; then
-                local version=$(${INSTALL_DIR}/sing-box version 2>&1 | awk '/sing-box version/{print $3}' || echo "unknown")
+                local version
+                version=$(${INSTALL_DIR}/sing-box version 2>&1 | awk '/sing-box version/{print $3}' || echo "unknown")
                 print_success "sing-box 二进制安装完成 (版本: ${version})"
             else
                 # 输出详细诊断信息

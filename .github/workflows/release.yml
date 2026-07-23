@@ -3,10 +3,18 @@ name: Auto Release
 on:
   push:
     branches: [main]
+    paths:
+      - 'modules/**'
+      - 'install.sh'
+      - '.github/workflows/release.yml'
   workflow_dispatch:
 
 permissions:
   contents: write
+
+concurrency:
+  group: release-latest
+  cancel-in-progress: true
 
 jobs:
   release:
@@ -18,7 +26,11 @@ jobs:
       - name: Get version
         id: ver
         run: |
-          VERSION=$(grep '^MODULE_VERSION=' modules/core.sh | head -1 | cut -d'"' -f2)
+          VERSION=$(sed -n 's/^MODULE_VERSION="\([^"]*\)".*/\1/p' modules/core.sh | head -1)
+          if [[ -z "$VERSION" ]]; then
+            echo "错误: 无法读取 MODULE_VERSION"
+            exit 1
+          fi
           echo "version=v${VERSION}" >> "$GITHUB_OUTPUT"
           echo "VERSION: v${VERSION}"
 

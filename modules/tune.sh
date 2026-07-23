@@ -58,6 +58,26 @@ check_kernel_version() {
 
 # 检测 BBR 模块是否可用
 check_bbr_available() {
+    # 容器环境下 sysctl 可能反映宿主机配置，BBR 由宿主机控制，无法在容器内应用
+    local _is_container=${VPS_IS_CONTAINER:-0}
+    if [[ $_is_container -eq 0 ]]; then
+        # VPS_IS_CONTAINER 可能尚未被设置，自行检测容器环境
+        if [[ -f /proc/1/environ ]] && grep -qaE 'container=lxc|container=lxcfs' /proc/1/environ 2>/dev/null; then
+            _is_container=1
+        elif [[ -f /proc/user_beancounters ]]; then
+            _is_container=1   # OpenVZ
+        elif grep -qaE '/(docker|lxc|kubepods)/' /proc/1/cgroup 2>/dev/null; then
+            _is_container=1
+        elif [[ -f /.dockerenv ]]; then
+            _is_container=1
+        fi
+    fi
+    if [[ $_is_container -eq 1 ]]; then
+        print_warning "检测到容器环境，BBR 由宿主机控制，容器内无法应用 BBR 调优"
+        echo "no"
+        return
+    fi
+
     # 先看已加载的算法
     local available=$(sysctl -n net.ipv4.tcp_available_congestion_control 2>/dev/null)
     if echo "$available" | grep -qw bbr; then
@@ -437,24 +457,40 @@ interactive_tune() {
     # 询问实际带宽（VPS 套餐带宽，跟网卡速率可能不同）
     local input_bw input_rtt
     local eff_bw=$VPS_EFF_BANDWIDTH
-    read -p "  实际带宽 [Mbps，建议 ${eff_bw}，范围 10-10000]: " input_bw
-    if [[ -n "$input_bw" ]]; then
-        if ! [[ "$input_bw" =~ ^[0-9]+$ ]] || (( input_bw < 10 || input_bw > 10000 )); then
-            print_error "无效值，使用估算值 ${eff_bw} Mbps"
-        else
-            eff_bw=$input_bw
+    local _retry=0
+    while [[ $_retry -lt 3 ]]; do
+        read -p "  实际带宽 [Mbps，建议 ${eff_bw}，范围 10-10000]: " input_bw
+        if [[ -z "$input_bw" ]]; then
+            break
         fi
+        if [[ "$input_bw" =~ ^[0-9]+$ ]] && (( input_bw >= 10 && input_bw <= 10000 )); then
+            eff_bw=$input_bw
+            break
+        fi
+        print_error "无效值，请输入 10-10000 范围内的数字"
+        _retry=$((_retry + 1))
+    done
+    if [[ $_retry -ge 3 ]]; then
+        print_warning "已超过 3 次重试，回退到建议值 ${eff_bw} Mbps"
     fi
 
     # 询问 RTT（到目标服务器的延迟）
     local eff_rtt=$VPS_EFF_RTT
-    read -p "  目标 RTT [ms，建议 ${eff_rtt}（国际线路默认 250，亚太 80，欧美 150）]: " input_rtt
-    if [[ -n "$input_rtt" ]]; then
-        if ! [[ "$input_rtt" =~ ^[0-9]+$ ]] || (( input_rtt < 5 || input_rtt > 1000 )); then
-            print_error "无效值，使用默认 ${eff_rtt} ms"
-        else
-            eff_rtt=$input_rtt
+    _retry=0
+    while [[ $_retry -lt 3 ]]; do
+        read -p "  目标 RTT [ms，建议 ${eff_rtt}（国际线路默认 250，亚太 80，欧美 150）]: " input_rtt
+        if [[ -z "$input_rtt" ]]; then
+            break
         fi
+        if [[ "$input_rtt" =~ ^[0-9]+$ ]] && (( input_rtt >= 5 && input_rtt <= 1000 )); then
+            eff_rtt=$input_rtt
+            break
+        fi
+        print_error "无效值，请输入 5-1000 范围内的数字"
+        _retry=$((_retry + 1))
+    done
+    if [[ $_retry -ge 3 ]]; then
+        print_warning "已超过 3 次重试，回退到建议值 ${eff_rtt} ms"
     fi
 
     # 用用户补充的带宽和 RTT 重新计算建议值
@@ -478,43 +514,75 @@ interactive_tune() {
 
     # 缓冲区上限（MB）
     local suggest_rmem_mb=$((SUGGEST_RMEM_MAX / 1024 / 1024))
-    read -p "  TCP 缓冲区上限 [MB，建议 ${suggest_rmem_mb}，范围 1-64]: " input_rmem
-    if [[ -n "$input_rmem" ]]; then
-        if ! [[ "$input_rmem" =~ ^[0-9]+$ ]] || (( input_rmem < 1 || input_rmem > 64 )); then
-            print_error "无效值，使用建议值 ${suggest_rmem_mb}MB"
-        else
-            final_rmem=$((input_rmem * 1024 * 1024))
+    _retry=0
+    while [[ $_retry -lt 3 ]]; do
+        read -p "  TCP 缓冲区上限 [MB，建议 ${suggest_rmem_mb}，范围 1-64]: " input_rmem
+        if [[ -z "$input_rmem" ]]; then
+            break
         fi
+        if [[ "$input_rmem" =~ ^[0-9]+$ ]] && (( input_rmem >= 1 && input_rmem <= 64 )); then
+            final_rmem=$((input_rmem * 1024 * 1024))
+            break
+        fi
+        print_error "无效值，请输入 1-64 范围内的数字"
+        _retry=$((_retry + 1))
+    done
+    if [[ $_retry -ge 3 ]]; then
+        print_warning "已超过 3 次重试，回退到建议值 ${suggest_rmem_mb}MB"
     fi
 
     # backlog
-    read -p "  网卡 backlog [建议 ${SUGGEST_BACKLOG}，范围 1000-65535]: " input_backlog
-    if [[ -n "$input_backlog" ]]; then
-        if ! [[ "$input_backlog" =~ ^[0-9]+$ ]] || (( input_backlog < 1000 || input_backlog > 65535 )); then
-            print_error "无效值，使用建议值 ${SUGGEST_BACKLOG}"
-        else
-            final_backlog=$input_backlog
+    _retry=0
+    while [[ $_retry -lt 3 ]]; do
+        read -p "  网卡 backlog [建议 ${SUGGEST_BACKLOG}，范围 1000-65535]: " input_backlog
+        if [[ -z "$input_backlog" ]]; then
+            break
         fi
+        if [[ "$input_backlog" =~ ^[0-9]+$ ]] && (( input_backlog >= 1000 && input_backlog <= 65535 )); then
+            final_backlog=$input_backlog
+            break
+        fi
+        print_error "无效值，请输入 1000-65535 范围内的数字"
+        _retry=$((_retry + 1))
+    done
+    if [[ $_retry -ge 3 ]]; then
+        print_warning "已超过 3 次重试，回退到建议值 ${SUGGEST_BACKLOG}"
     fi
 
     # somaxconn
-    read -p "  somaxconn [建议 ${SUGGEST_SOMAXCONN}，范围 128-65535]: " input_somaxconn
-    if [[ -n "$input_somaxconn" ]]; then
-        if ! [[ "$input_somaxconn" =~ ^[0-9]+$ ]] || (( input_somaxconn < 128 || input_somaxconn > 65535 )); then
-            print_error "无效值，使用建议值 ${SUGGEST_SOMAXCONN}"
-        else
-            final_somaxconn=$input_somaxconn
+    _retry=0
+    while [[ $_retry -lt 3 ]]; do
+        read -p "  somaxconn [建议 ${SUGGEST_SOMAXCONN}，范围 128-65535]: " input_somaxconn
+        if [[ -z "$input_somaxconn" ]]; then
+            break
         fi
+        if [[ "$input_somaxconn" =~ ^[0-9]+$ ]] && (( input_somaxconn >= 128 && input_somaxconn <= 65535 )); then
+            final_somaxconn=$input_somaxconn
+            break
+        fi
+        print_error "无效值，请输入 128-65535 范围内的数字"
+        _retry=$((_retry + 1))
+    done
+    if [[ $_retry -ge 3 ]]; then
+        print_warning "已超过 3 次重试，回退到建议值 ${SUGGEST_SOMAXCONN}"
     fi
 
     # swappiness
-    read -p "  vm.swappiness [建议 ${SUGGEST_SWAPPINESS}，范围 0-100]: " input_swappiness
-    if [[ -n "$input_swappiness" ]]; then
-        if ! [[ "$input_swappiness" =~ ^[0-9]+$ ]] || (( input_swappiness < 0 || input_swappiness > 100 )); then
-            print_error "无效值，使用建议值 ${SUGGEST_SWAPPINESS}"
-        else
-            final_swappiness=$input_swappiness
+    _retry=0
+    while [[ $_retry -lt 3 ]]; do
+        read -p "  vm.swappiness [建议 ${SUGGEST_SWAPPINESS}，范围 0-100]: " input_swappiness
+        if [[ -z "$input_swappiness" ]]; then
+            break
         fi
+        if [[ "$input_swappiness" =~ ^[0-9]+$ ]] && (( input_swappiness >= 0 && input_swappiness <= 100 )); then
+            final_swappiness=$input_swappiness
+            break
+        fi
+        print_error "无效值，请输入 0-100 范围内的数字"
+        _retry=$((_retry + 1))
+    done
+    if [[ $_retry -ge 3 ]]; then
+        print_warning "已超过 3 次重试，回退到建议值 ${SUGGEST_SWAPPINESS}"
     fi
 
     # 确认
@@ -553,8 +621,7 @@ interactive_tune() {
 # 创建 swap 文件（如果当前没有 swap 且用户确认）
 setup_swap_file() {
     # 检查当前 swap 状态
-    local current_swap=$(swapon --show 2>/dev/null | wc -l)
-    if [[ $current_swap -gt 0 ]]; then
+    if swapon --show 2>/dev/null | tail -n +2 | grep -q .; then
         print_info "当前已存在 swap 分区/文件："
         swapon --show 2>/dev/null
         if ! confirm "是否仍要创建额外的 swap 文件？(y/N): "; then
@@ -593,6 +660,15 @@ setup_swap_file() {
     if [[ -n "$free_mb" ]] && (( free_mb < swap_size + 1024 )); then
         print_error "磁盘剩余空间不足（需要至少 $((swap_size + 1024))MB，当前 ${free_mb}MB）"
         return 1
+    fi
+
+    # 检测文件系统类型，btrfs 需要特殊处理（fallocate 创建的 swap 可能无效）
+    local fstype=$(findmnt -no FSTYPE / 2>/dev/null)
+    if [[ "$fstype" == "btrfs" ]]; then
+        print_warning "Btrfs 文件系统建议使用 btrfs filesystem mkswapfile 创建 swap，本脚本可能创建无效 swap 文件"
+        if ! confirm "是否仍要继续？(y/N): "; then
+            return 0
+        fi
     fi
 
     if [[ -f "$TUNE_SWAP_FILE" ]]; then
@@ -654,7 +730,10 @@ remove_swap_file() {
     fi
 
     print_info "关闭 swap..."
-    swapoff "$TUNE_SWAP_FILE" 2>/dev/null
+    if ! swapoff "$TUNE_SWAP_FILE" 2>/dev/null; then
+        print_error "swap 正在使用，无法移除，请先释放 swap"
+        return 1
+    fi
 
     # 从 fstab 移除
     if grep -q "^${TUNE_SWAP_FILE} " /etc/fstab 2>/dev/null; then
@@ -802,7 +881,7 @@ show_tune_status() {
     else
         echo -e "    vm.swappiness:              ${swappiness} ${YELLOW}(本机建议 ${suggest_swappiness_show})${NC}"
     fi
-    echo -e "    vm.vfs_cache_pressure:      ${vfs_cache} ${YELLOW}(建议 50)${NC}"
+    echo -e "    vm.vfs_cache_pressure:      ${vfs_cache} ${YELLOW}(预设 50)${NC}"
     echo -e "    vm.dirty_ratio:             ${dirty_ratio}%"
     echo -e "    vm.dirty_background_ratio:  ${dirty_bg}%"
     echo -e "    vm.overcommit_memory:       ${overcommit}"
@@ -866,38 +945,58 @@ auto_tune() {
         return 0
     fi
 
-    # 检测 BBR
-    local bbr_status=$(check_bbr_available)
-    if [[ "$bbr_status" == "no" ]]; then
-        return 0
-    fi
-
-    # 静默应用调优（基于本机配置的建议值）
-    backup_sysctl
+    # 先检测 VPS 配置（含容器检测，VPS_IS_CONTAINER 在此设置）
     detect_vps_config
-    write_tune_conf "$SUGGEST_RMEM_MAX" "$SUGGEST_RMEM_MAX" "$SUGGEST_BACKLOG" "$SUGGEST_SOMAXCONN" "$SUGGEST_SWAPPINESS"
 
-    if sysctl --system >/dev/null 2>&1; then
-        touch "$TUNE_FLAG"
-        print_success "网络调优已自动应用（BBR/缓冲区/宽带缓存/SWAP）"
+    # 容器环境：跳过 sysctl 调优（容器无权限），但仍可创建 swap
+    if [[ $VPS_IS_CONTAINER -eq 1 ]]; then
+        print_warning "检测到容器环境，跳过 sysctl 调优"
+    else
+        # 检测 BBR
+        local bbr_status=$(check_bbr_available)
+        if [[ "$bbr_status" == "no" ]]; then
+            return 0
+        fi
+
+        # 静默应用调优（基于本机配置的建议值）
+        backup_sysctl
+        write_tune_conf "$SUGGEST_RMEM_MAX" "$SUGGEST_RMEM_MAX" "$SUGGEST_BACKLOG" "$SUGGEST_SOMAXCONN" "$SUGGEST_SWAPPINESS"
+
+        if sysctl --system >/dev/null 2>&1; then
+            touch "$TUNE_FLAG"
+            print_success "网络调优已自动应用（BBR/缓冲区/宽带缓存/SWAP）"
+        else
+            print_warning "sysctl 应用失败，请检查配置或权限"
+        fi
     fi
 
     # 自动创建 swap：仅当物理内存 < 2GB 且当前无 swap 时
     # 大内存机器不需要，避免无谓占用磁盘
-    local current_swap=$(swapon --show 2>/dev/null | wc -l)
-    if [[ $current_swap -eq 0 ]]; then
+    # 容器环境 swap 可能可用，因此容器也走此分支
+    if ! swapon --show 2>/dev/null | tail -n +2 | grep -q .; then
         local mem_mb=$(free -m 2>/dev/null | awk '/^Mem:/{print $2}')
         if [[ -n "$mem_mb" ]] && (( mem_mb < 2048 )); then
-            # 静默创建 1024MB swap（小内存机器兜底）
-            if fallocate -l 1024M "$TUNE_SWAP_FILE" 2>/dev/null || \
-               dd if=/dev/zero of="$TUNE_SWAP_FILE" bs=1M count=1024 status=none 2>/dev/null; then
-                chmod 600 "$TUNE_SWAP_FILE" 2>/dev/null
-                mkswap "$TUNE_SWAP_FILE" >/dev/null 2>&1
-                swapon "$TUNE_SWAP_FILE" 2>/dev/null && {
-                    grep -q "^${TUNE_SWAP_FILE} " /etc/fstab 2>/dev/null || \
-                        echo "${TUNE_SWAP_FILE} none swap sw 0 0" >> /etc/fstab
-                    print_success "检测到小内存 (${mem_mb}MB) 无 swap，已自动创建 1024MB swap"
-                }
+            # 检查磁盘剩余空间（至少需要 swap_size + 1GB = 2048MB）
+            local free_mb=$(df -m / 2>/dev/null | awk 'NR==2{print $4}')
+            if [[ -z "$free_mb" ]] || (( free_mb < 1024 + 1024 )); then
+                print_warning "磁盘剩余空间不足，跳过自动创建 swap（需要至少 2048MB，当前 ${free_mb:-未知}MB）"
+            else
+                # 静默创建 1024MB swap（小内存机器兜底）
+                if fallocate -l 1024M "$TUNE_SWAP_FILE" 2>/dev/null || \
+                   dd if=/dev/zero of="$TUNE_SWAP_FILE" bs=1M count=1024 status=none 2>/dev/null; then
+                    chmod 600 "$TUNE_SWAP_FILE" 2>/dev/null
+                    if ! mkswap "$TUNE_SWAP_FILE" >/dev/null 2>&1; then
+                        print_warning "mkswap 失败，清理残留 swap 文件"
+                        rm -f "$TUNE_SWAP_FILE"
+                    elif ! swapon "$TUNE_SWAP_FILE" 2>/dev/null; then
+                        print_warning "swapon 失败，清理残留 swap 文件"
+                        rm -f "$TUNE_SWAP_FILE"
+                    else
+                        grep -q "^${TUNE_SWAP_FILE} " /etc/fstab 2>/dev/null || \
+                            echo "${TUNE_SWAP_FILE} none swap sw 0 0" >> /etc/fstab
+                        print_success "检测到小内存 (${mem_mb}MB) 无 swap，已自动创建 1024MB swap"
+                    fi
+                fi
             fi
         fi
     fi
@@ -914,7 +1013,10 @@ tune_menu() {
         local cc=$(sysctl -n net.ipv4.tcp_congestion_control 2>/dev/null)
         local qdisc=$(sysctl -n net.core.default_qdisc 2>/dev/null)
         local swappiness=$(sysctl -n vm.swappiness 2>/dev/null)
-        local has_swap=$(swapon --show 2>/dev/null | wc -l)
+        local has_swap=0
+        if swapon --show 2>/dev/null | tail -n +2 | grep -q .; then
+            has_swap=1
+        fi
         local status_icon
 
         if [[ "$cc" == "bbr" && "$qdisc" == "fq" ]]; then
@@ -1026,4 +1128,35 @@ swap_file_menu() {
                 ;;
         esac
     done
+}
+
+# ==================== 卸载时静默清理全部调优产物 ====================
+# 供 delete_self 调用，不询问用户，尽量还原系统原状
+cleanup_tune_all() {
+    # 1. 恢复 sysctl 原值（如果有备份）
+    if [[ -f "$TUNE_BACKUP" ]]; then
+        while IFS='=' read -r key value; do
+            [[ "$key" =~ ^#.*$ || -z "$key" ]] && continue
+            value="${value#\"}"
+            value="${value%\"}"
+            sysctl -w "$key=$value" >/dev/null 2>&1
+        done < "$TUNE_BACKUP"
+    fi
+
+    # 2. 删除调优配置文件
+    rm -f "$TUNE_CONF" 2>/dev/null
+    rm -f "$TUNE_FLAG" 2>/dev/null
+
+    # 重新加载 sysctl 使恢复生效
+    sysctl --system >/dev/null 2>&1
+
+    # 3. 关闭并删除自建 swap 文件
+    if [[ -f "$TUNE_SWAP_FILE" ]]; then
+        swapoff "$TUNE_SWAP_FILE" 2>/dev/null
+        rm -f "$TUNE_SWAP_FILE" 2>/dev/null
+        # 清理 fstab 中的 swap 条目
+        if grep -q "^${TUNE_SWAP_FILE} " /etc/fstab 2>/dev/null; then
+            sed -i "\|^${TUNE_SWAP_FILE} |d" /etc/fstab
+        fi
+    fi
 }

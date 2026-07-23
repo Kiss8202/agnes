@@ -429,6 +429,12 @@ delete_self() {
     fi
     
     if [[ -d /etc/sing-box ]]; then
+        # 先清理网络调优产物（sysctl 配置、swap 文件、恢复原值）
+        # 必须在 rm -rf /etc/sing-box 之前执行，否则备份文件会被删，永远失去恢复能力
+        if declare -F cleanup_tune_all &>/dev/null; then
+            print_info "清理网络调优配置..."
+            cleanup_tune_all
+        fi
         print_info "删除 /etc/sing-box 配置目录..."
         rm -rf /etc/sing-box 2>/dev/null
     fi
@@ -1083,9 +1089,10 @@ main() {
     # 先加载 IP 配置（如果存在）
     load_ip_config
     load_dns_config
-    
-    get_ip
-    
+
+    # get_ip 失败不退出整个脚本，让用户仍能进入主菜单手动配置
+    get_ip || print_warning "IP 自动获取失败，请稍后在主菜单 [3] 出入站配置中手动填写"
+
     setup_sb_shortcut
 
     # 安装完成后自动应用网络调优（安全第一：仅修改 sysctl，不安装任何软件）
@@ -1110,8 +1117,12 @@ main() {
         print_info "检测到链接文件缺失，正在重新生成..."
         regenerate_links_from_config
     fi
-    
+
     main_menu
 }
 
-main "$@"
+# 入口守卫：仅当直接执行 menu.sh 时才运行 main，
+# 被 install.sh source 时不执行（由 install.sh 末尾统一调用）
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

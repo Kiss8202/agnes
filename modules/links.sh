@@ -276,13 +276,44 @@ regenerate_anytls_link() {
             local link_text="[AnyTLS+REALITY] ${SERVER_IP}:${port} (SNI: ${sni})\n请使用 sing-box 客户端配置文件\n----------------------------------------\n\n"
             ALL_LINKS_TEXT="${ALL_LINKS_TEXT}${link_text}"
             ANYTLS_LINKS="${ANYTLS_LINKS}${link_text}"
+
+            if [[ -n "${SERVER_IPV6}" ]]; then
+                local link_text_ipv6="[AnyTLS+REALITY] [${SERVER_IPV6}]:${port} (SNI: ${sni})\n请使用 sing-box 客户端配置文件\n----------------------------------------\n\n"
+                ALL_LINKS_TEXT="${ALL_LINKS_TEXT}${link_text_ipv6}"
+                ANYTLS_LINKS="${ANYTLS_LINKS}${link_text_ipv6}"
+            fi
+
+            # 重新生成客户端 JSON 中的 server 字段（IPv4）
+            local client_config_file_ipv4="${LINK_DIR}/anytls_reality_client_${port}.json"
+            if [[ -f "${client_config_file_ipv4}" ]]; then
+                jq --arg server "${SERVER_IP}" '.outbounds[0].server = $server' "${client_config_file_ipv4}" > "${client_config_file_ipv4}.tmp" && mv "${client_config_file_ipv4}.tmp" "${client_config_file_ipv4}"
+            fi
+            # 重新生成客户端 JSON 中的 server 字段（IPv6）
+            if [[ -n "${SERVER_IPV6}" ]]; then
+                local client_config_file_ipv6="${LINK_DIR}/anytls_reality_client_${port}_ipv6.json"
+                if [[ -f "${client_config_file_ipv6}" ]]; then
+                    jq --arg server "${SERVER_IPV6}" '.outbounds[0].server = $server' "${client_config_file_ipv6}" > "${client_config_file_ipv6}.tmp" && mv "${client_config_file_ipv6}.tmp" "${client_config_file_ipv6}"
+                fi
+            fi
         else
             local link_ipv4=$(generate_proto_link "anytls" "${SERVER_IP}" "${port}" "password=${password}" "sni=${sni}" "insecure=true")
             add_link "$link_ipv4" "AnyTLS" "" "${SERVER_IP}" "${port}" "${sni}"
 
+            # 重新生成客户端 JSON 中的 server 字段（IPv4）
+            local client_config_file_ipv4="${LINK_DIR}/anytls_client_${port}.json"
+            if [[ -f "${client_config_file_ipv4}" ]]; then
+                jq --arg server "${SERVER_IP}" '.outbounds[0].server = $server' "${client_config_file_ipv4}" > "${client_config_file_ipv4}.tmp" && mv "${client_config_file_ipv4}.tmp" "${client_config_file_ipv4}"
+            fi
+
             if [[ -n "${SERVER_IPV6}" ]]; then
                 local link_ipv6=$(generate_proto_link "anytls" "[${SERVER_IPV6}]" "${port}" "password=${password}" "sni=${sni}" "insecure=true")
                 add_link "$link_ipv6" "AnyTLS" "" "[${SERVER_IPV6}]" "${port}" "${sni}"
+
+                # 重新生成客户端 JSON 中的 server 字段（IPv6）
+                local client_config_file_ipv6="${LINK_DIR}/anytls_client_${port}_ipv6.json"
+                if [[ -f "${client_config_file_ipv6}" ]]; then
+                    jq --arg server "${SERVER_IPV6}" '.outbounds[0].server = $server' "${client_config_file_ipv6}" > "${client_config_file_ipv6}.tmp" && mv "${client_config_file_ipv6}.tmp" "${client_config_file_ipv6}"
+                fi
             fi
         fi
     fi
@@ -317,7 +348,7 @@ regenerate_links_from_config() {
 
     # 确保 SERVER_IP 已设置
     if [[ -z "${SERVER_IP}" ]]; then
-        get_ip
+        get_ip || return 1
     fi
 
     if [[ ! -f "${CONFIG_FILE}" ]] || ! command -v jq &>/dev/null; then

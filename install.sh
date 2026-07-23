@@ -117,8 +117,16 @@ download_modules_raw() {
     for module in core install links dns relay protocols config tune menu; do
         echo -n "[引导] 下载模块 ${module}.sh ... "
         local raw_urls=($(build_download_urls "${GH_RAW_URL}/${module}.sh"))
-        local tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX.sh)
+        local tmp_mod
+        tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX.sh) || { echo "失败（创建临时文件失败）"; return 1; }
         if multi_source_download "${tmp_mod}" "${raw_urls[@]}"; then
+            # 校验下载内容：必须是 shell 脚本（shebang 或注释开头），防止镜像返回 HTML 错误页被 source 执行
+            if [[ ! -s "${tmp_mod}" ]] || ! head -1 "${tmp_mod}" | grep -qE '^#!|^#'; then
+                rm -f "${tmp_mod}"
+                echo "失败（内容无效）"
+                echo "错误: 模块 ${module}.sh 下载内容不是有效的 shell 脚本，可能镜像返回了错误页"
+                return 1
+            fi
             mv "${tmp_mod}" "${MODULES_DIR}/${module}.sh"
             echo "完成"
         else
@@ -155,14 +163,22 @@ check_version_update() {
 # 自更新 install.sh 引导脚本本身（避免引导脚本与新模块版本不一致导致函数丢失）
 # 用法: self_update_install
 self_update_install() {
-    # 只更新已经在磁盘上的 install.sh；bash <(curl) 方式运行的跳过（让主函数处理保存）
-    local self_path="${SCRIPT_PATH:-/etc/sing-box/install.sh}"
-    if [[ ! -f "$self_path" ]] || [[ "$self_path" == /dev/fd/* ]]; then
+    # 注意：此时 core.sh 还未 source，SCRIPT_PATH 变量不存在
+    # 用 BASH_SOURCE 探测实际脚本路径，回退到固定路径
+    local self_path="${BASH_SOURCE[0]:-$0}"
+    # 如果是进程替换或 stdin，跳过
+    if [[ "$self_path" == /dev/fd/* ]] || [[ "$self_path" == /dev/stdin ]] || [[ ! -f "$self_path" ]]; then
+        self_path="/etc/sing-box/install.sh"
+    fi
+    # 仍然不存在则跳过
+    if [[ ! -f "$self_path" ]]; then
         return 0
     fi
 
     local install_urls=($(build_download_urls "$GH_INSTALL_RAW_URL"))
-    local tmp_install=$(mktemp /tmp/sb-install.XXXXXX.sh)
+    # 临时文件放在目标同目录，保证 mv 原子替换（同文件系统）
+    local tmp_install
+    tmp_install=$(mktemp "${self_path}.XXXXXX.sh") || { echo "[引导] 自更新创建临时文件失败"; return 0; }
     if ! multi_source_download "$tmp_install" "${install_urls[@]}"; then
         rm -f "$tmp_install"
         echo "[引导] install.sh 自更新下载失败，继续使用本地版本"
@@ -177,15 +193,23 @@ self_update_install() {
     fi
 
     # 内容未变化则跳过（避免无意义的 exec 重新执行）
-    local old_md5=$(md5sum "$self_path" 2>/dev/null | awk '{print $1}')
-    local new_md5=$(md5sum "$tmp_install" 2>/dev/null | awk '{print $1}')
+    local old_md5 new_md5
+    old_md5=$(md5sum "$self_path" 2>/dev/null | awk '{print $1}')
+    new_md5=$(md5sum "$tmp_install" 2>/dev/null | awk '{print $1}')
     if [[ "$old_md5" == "$new_md5" ]]; then
         rm -f "$tmp_install"
         return 0
     fi
 
-    # 替换并重新执行
-    mv "$tmp_install" "$self_path"
+    # 备份旧版本，原子替换，失败可回滚
+    cp -p "$self_path" "${self_path}.bak" 2>/dev/null
+    if ! mv "$tmp_install" "$self_path"; then
+        echo "[引导] 自更新替换失败，回滚到旧版本"
+        mv "${self_path}.bak" "$self_path" 2>/dev/null
+        rm -f "$tmp_install"
+        return 0
+    fi
+    rm -f "${self_path}.bak"
     chmod +x "$self_path"
     echo "[引导] install.sh 引导脚本已更新，重新执行以加载新版本..."
     exec bash "$self_path" "$@"
@@ -208,11 +232,16 @@ else
         # 优先从 Releases 下载
         if ! download_modules_archive; then
             echo "[引导] Releases 下载失败，回退到逐个下载..."
+            # 复用 download_modules_raw 的校验逻辑，但允许单个失败保留旧版本
+            mkdir -p "${MODULES_DIR}"
             for module in core install links dns relay protocols config tune menu; do
                 echo -n "[引导] 更新模块 ${module}.sh ... "
                 local raw_urls=($(build_download_urls "${GH_RAW_URL}/${module}.sh"))
-                local tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX.sh)
-                if multi_source_download "${tmp_mod}" "${raw_urls[@]}"; then
+                local tmp_mod
+                tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX.sh) || { echo "失败（创建临时文件失败）"; continue; }
+                if multi_source_download "${tmp_mod}" "${raw_urls[@]}" \
+                   && [[ -s "${tmp_mod}" ]] \
+                   && head -1 "${tmp_mod}" | grep -qE '^#!|^#'; then
                     mv "${tmp_mod}" "${MODULES_DIR}/${module}.sh"
                     echo "完成"
                 else

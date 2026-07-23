@@ -1,6 +1,6 @@
 # ==================== sing-box 管理脚本模块 ====================
 # 模块版本号，用于检查模块是否需要更新
-MODULE_VERSION="1.16"
+MODULE_VERSION="1.17"
 
 # ==================== 颜色定义 ====================
 RED='\033[0;31m'
@@ -8,7 +8,6 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
 CYAN='\033[0;36m'
-PURPLE='\033[0;35m'
 NC='\033[0m'
 
 # ==================== 路径配置 ====================
@@ -72,16 +71,9 @@ INBOUND_RELAY_TAGS=()  # 存储每个节点使用的中转标签，"direct" 表�
 INBOUND_SNIS=()
 
 # 密钥变量
-UUID=""
 REALITY_PRIVATE=""
 REALITY_PUBLIC=""
 SHORT_ID=""
-HY2_PASSWORD=""
-SS_PASSWORD=""
-SHADOWTLS_PASSWORD=""
-ANYTLS_PASSWORD=""
-SOCKS_USER=""
-SOCKS_PASS=""
 
 # 默认SNI
 DEFAULT_SNI="www.notion.so"
@@ -105,12 +97,13 @@ fi
 
 # ==================== jq 配置文件原子更新 ====================
 # 用法: jq_update_config <jq参数...>
-# 功能: 原子性更新配置文件，先写临时文件再替换，失败时保留原文件
+# 功能: 原子性更新配置文件，临时文件与目标同目录保证 mv 原子替换，失败时保留原文件
 jq_update_config() {
     local tmp_file
-    tmp_file=$(mktemp) || { print_error "创建临时文件失败" >&2; return 1; }
+    # 临时文件与目标文件同目录，保证 mv 是原子 rename（不跨文件系统）
+    tmp_file=$(mktemp "${CONFIG_FILE}.XXXXXX.tmp") || { print_error "创建临时文件失败" >&2; return 1; }
     if jq "$@" "${CONFIG_FILE}" > "$tmp_file" && [[ -s "$tmp_file" ]]; then
-        mv "$tmp_file" "${CONFIG_FILE}"
+        mv -f "$tmp_file" "${CONFIG_FILE}"
         return 0
     else
         rm -f "$tmp_file"
@@ -142,16 +135,19 @@ json_escape() {
     str="${str//$'\n'/\\n}" # 换行
     str="${str//$'\r'/\\r}" # 回车
     str="${str//$'\t'/\\t}" # 制表符
-    echo -n "$str"
-}
-
-# 验证端口号
-validate_port() {
-    local port="$1"
-    if ! [[ "$port" =~ ^[0-9]+$ ]] || (( port < 1 || port > 65535 )); then
-        return 1
-    fi
-    return 0
+    str="${str//$'\b'/\\b}" # 退格
+    str="${str//$'\f'/\\f}" # 换页
+    # 转义剩余控制字符 (0x00-0x1F)
+    local i ch code out=""
+    for ((i=0; i<${#str}; i++)); do
+        ch="${str:i:1}"
+        printf -v code '%d' "'$ch" 2>/dev/null
+        if [[ "$code" =~ ^[0-9]+$ ]] && (( code < 32 )); then
+            printf -v ch '\\u%04x' "$code"
+        fi
+        out+="$ch"
+    done
+    printf '%s' "$out"
 }
 
 # ==================== 交互辅助函数 ====================
@@ -192,23 +188,6 @@ show_protocol_links() {
     echo -e "${color}【${proto}】${NC}"
     echo -e "$links"
     echo ""
-}
-
-# 统一追加节点链接（自动追加 #协议-IP 后缀）
-# 用法: add_node_links <link_template> <proto> <ip> <port> [sni]
-# link_template 中的 __IP__ 会被替换为实际 IP
-add_node_links() {
-    local template="$1"
-    local proto="$2"
-    local ip="$3"
-    local port="$4"
-
-    # 替换 __IP__ 占位符
-    local link="${template//__IP__/$ip}"
-    # 追加协议-IP 后缀
-    link="${link}#${proto}-${ip}"
-
-    add_link "$link" "$proto" "" "$ip" "$port" ""
 }
 
 # 生成 ShadowTLS 客户端配置文件
@@ -277,7 +256,7 @@ EOFCLIENT
 }
 
 # ==================== 修改端口封装 ====================
-# 用法: modify_port <old_tag> <new_tag_prefix> <new_port> [extra_jq_update]
+# 用法: modify_port <old_tag> <new_tag_prefix> <new_port>
 # 自动更新 inbound tag/port 和 route rules 中的引用
 modify_port() {
     local old_tag="$1"
@@ -297,63 +276,60 @@ modify_port() {
 }
 
 # ==================== 重新生成密钥/密码封装 ====================
-# 用法: regenerate_secret <type> <tag> [extra_arg]
-# type: uuid | password | sid | obfs_password | ss_password | stls_password | socks_user
+# 用法: regenerate_secret <type> <tag>
+# type: uuid | password | sid | obfs_password | ss_password | stls_password | socks_password
 regenerate_secret() {
     local type="$1"
     local tag="$2"
     local new_value=""
+    local jq_path=""
 
     case "$type" in
         uuid)
             new_value=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null)
-            if [[ -z "$new_value" ]]; then
-                print_error "UUID 生成失败"; return 1
-            fi
-            jq_update_config --arg tag "$tag" --arg uuid "$new_value" \
-                '(.inbounds[] | select(.tag == $tag)) |= (.users[0].uuid = $uuid)'
-            print_success "UUID 已重新生成: ${new_value}"
+            [[ -z "$new_value" ]] && { print_error "UUID 生成失败"; return 1; }
+            jq_path='(.inbounds[] | select(.tag == $tag)) |= (.users[0].uuid = $uuid)'
+            jq_update_config --arg tag "$tag" --arg uuid "$new_value" "$jq_path" \
+                && print_success "UUID 已重新生成: ${new_value}"
             ;;
-        password)
+        password|socks_password|stls_password)
             new_value=$(openssl rand -hex 16)
-            jq_update_config --arg tag "$tag" --arg password "$new_value" \
-                '(.inbounds[] | select(.tag == $tag)) |= (.users[0].password = $password)'
-            print_success "密码已重新生成: ${new_value}"
+            [[ -z "$new_value" ]] && { print_error "密码生成失败"; return 1; }
+            jq_path='(.inbounds[] | select(.tag == $tag)) |= (.users[0].password = $password)'
+            jq_update_config --arg tag "$tag" --arg password "$new_value" "$jq_path" \
+                && print_success "密码已重新生成: ${new_value}"
             ;;
         sid)
             new_value=$(openssl rand -hex 8)
-            jq_update_config --arg tag "$tag" --arg sid "$new_value" \
-                '(.inbounds[] | select(.tag == $tag)) |= (.tls.reality.short_id = [$sid])'
-            print_success "Short ID 已重新生成: ${new_value}"
+            [[ -z "$new_value" ]] && { print_error "Short ID 生成失败"; return 1; }
+            jq_path='(.inbounds[] | select(.tag == $tag)) |= (.tls.reality.short_id = [$sid])'
+            jq_update_config --arg tag "$tag" --arg sid "$new_value" "$jq_path" \
+                && print_success "Short ID 已重新生成: ${new_value}"
             ;;
         obfs_password)
             new_value=$(openssl rand -hex 16)
-            jq_update_config --arg tag "$tag" --arg password "$new_value" \
-                '(.inbounds[] | select(.tag == $tag)) |= (.obfs.password = $password)'
-            print_success "混淆密码已重新生成: ${new_value}"
+            [[ -z "$new_value" ]] && { print_error "混淆密码生成失败"; return 1; }
+            jq_path='(.inbounds[] | select(.tag == $tag)) |= (.obfs.password = $password)'
+            jq_update_config --arg tag "$tag" --arg password "$new_value" "$jq_path" \
+                && print_success "混淆密码已重新生成: ${new_value}"
             ;;
         ss_password)
             new_value=$(openssl rand -base64 16)
-            jq_update_config --arg tag "$tag" --arg password "$new_value" \
-                '(.inbounds[] | select(.tag == $tag)) |= (.password = $password)'
-            print_success "SS 密码已重新生成: ${new_value}"
-            ;;
-        stls_password)
-            new_value=$(openssl rand -hex 16)
-            jq_update_config --arg tag "$tag" --arg password "$new_value" \
-                '(.inbounds[] | select(.tag == $tag)) |= (.users[0].password = $password)'
-            print_success "ShadowTLS 密码已重新生成: ${new_value}"
-            ;;
-        socks_password)
-            new_value=$(openssl rand -hex 16)
-            jq_update_config --arg tag "$tag" --arg password "$new_value" \
-                '(.inbounds[] | select(.tag == $tag)) |= (.users[0].password = $password)'
-            print_success "密码已重新生成: ${new_value}"
+            [[ -z "$new_value" ]] && { print_error "SS 密码生成失败"; return 1; }
+            jq_path='(.inbounds[] | select(.tag == $tag)) |= (.password = $password)'
+            jq_update_config --arg tag "$tag" --arg password "$new_value" "$jq_path" \
+                && print_success "SS 密码已重新生成: ${new_value}"
             ;;
         *)
             print_error "未知的密钥类型: $type"; return 1
             ;;
     esac
+
+    # 校验 tag 是否真实命中（jq select 未匹配时配置不变，jq_update_config 仍返回成功）
+    if ! jq -e --arg tag "$tag" '(.inbounds[] | select(.tag == $tag))' "$CONFIG_FILE" >/dev/null 2>&1; then
+        print_warning "未找到 tag 为 ${tag} 的节点，请确认节点是否存在"
+        return 1
+    fi
     return 0
 }
 
@@ -414,13 +390,11 @@ detect_system() {
 # 全局版本标志
 SB_GE_1_11=0
 SB_GE_1_12=0
-SB_GE_1_13=0
 SB_GE_1_14=0
 
 detect_singbox_version() {
     SB_GE_1_11=0
     SB_GE_1_12=0
-    SB_GE_1_13=0
     SB_GE_1_14=0
 
     if ! [[ -x "${INSTALL_DIR}/sing-box" ]]; then
@@ -440,11 +414,9 @@ detect_singbox_version() {
     # 设置版本标志
     if [[ $major -gt 1 ]] || [[ $major -eq 1 && $minor -ge 14 ]]; then
         SB_GE_1_14=1
-        SB_GE_1_13=1
         SB_GE_1_12=1
         SB_GE_1_11=1
     elif [[ $major -eq 1 && $minor -ge 13 ]]; then
-        SB_GE_1_13=1
         SB_GE_1_12=1
         SB_GE_1_11=1
     elif [[ $major -eq 1 && $minor -ge 12 ]]; then
@@ -454,7 +426,7 @@ detect_singbox_version() {
         SB_GE_1_11=1
     fi
 
-    print_info "sing-box 版本: ${version} (1.11:${SB_GE_1_11} 1.12:${SB_GE_1_12} 1.13:${SB_GE_1_13} 1.14:${SB_GE_1_14})"
+    print_info "sing-box 版本: ${version} (1.11:${SB_GE_1_11} 1.12:${SB_GE_1_12} 1.14:${SB_GE_1_14})"
 }
 # ==================== 服务控制（兼容 systemd / OpenRC） ====================
 svc_start() {

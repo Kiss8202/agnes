@@ -34,20 +34,20 @@ build_dns_remote_server() {
     case "${DNS_MODE}" in
         "doh")
             if [[ $SB_GE_1_12 -eq 1 ]]; then
-                echo "{\"tag\": \"remote\", \"type\": \"https\", \"server\": \"${DNS_SERVER}\", \"server_port\": 443, \"domain_resolver\": \"local\"}"
+                echo "{\"tag\": \"remote\", \"type\": \"https\", \"server\": \"$(json_escape "$DNS_SERVER")\", \"server_port\": 443, \"domain_resolver\": \"local\"}"
             else
-                echo "{\"tag\": \"remote\", \"type\": \"https\", \"server\": \"${DNS_SERVER}\", \"server_port\": 443, \"address_resolver\": \"local\"}"
+                echo "{\"tag\": \"remote\", \"type\": \"https\", \"server\": \"$(json_escape "$DNS_SERVER")\", \"server_port\": 443, \"address_resolver\": \"local\"}"
             fi
             ;;
         "dot")
             if [[ $SB_GE_1_12 -eq 1 ]]; then
-                echo "{\"tag\": \"remote\", \"type\": \"tls\", \"server\": \"${DNS_SERVER}\", \"server_port\": 853, \"domain_resolver\": \"local\"}"
+                echo "{\"tag\": \"remote\", \"type\": \"tls\", \"server\": \"$(json_escape "$DNS_SERVER")\", \"server_port\": 853, \"domain_resolver\": \"local\"}"
             else
-                echo "{\"tag\": \"remote\", \"type\": \"tls\", \"server\": \"${DNS_SERVER}\", \"server_port\": 853, \"address_resolver\": \"local\"}"
+                echo "{\"tag\": \"remote\", \"type\": \"tls\", \"server\": \"$(json_escape "$DNS_SERVER")\", \"server_port\": 853, \"address_resolver\": \"local\"}"
             fi
             ;;
         "udp"|*)
-            echo "{\"tag\": \"remote\", \"type\": \"udp\", \"server\": \"${DNS_SERVER}\"}"
+            echo "{\"tag\": \"remote\", \"type\": \"udp\", \"server\": \"$(json_escape "$DNS_SERVER")\"}"
             ;;
     esac
 }
@@ -114,7 +114,7 @@ dns_config_menu() {
                     2) DNS_SERVER="cloudflare-dns.com"; DNS_SERVER_NAME="Cloudflare"; DNS_MODE="doh"; save_dns_config; print_success "已设置为 Cloudflare DoH" ;;
                     3) DNS_SERVER="dns.alidns.com"; DNS_SERVER_NAME="Alibaba"; DNS_MODE="doh"; save_dns_config; print_success "已设置为 Alibaba DoH" ;;
                     4) DNS_SERVER="doh.pub"; DNS_SERVER_NAME="Tencent"; DNS_MODE="doh"; save_dns_config; print_success "已设置为 Tencent DoH" ;;
-                    *) continue ;;
+                    *) ;;
                 esac
                 ;;
             6)

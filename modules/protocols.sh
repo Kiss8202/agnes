@@ -389,7 +389,7 @@ setup_shadowtls() {
     fi
     
     PROTO="ShadowTLS v3"
-    EXTRA_INFO="Shadowsocks方法: 2022-blake3-aes-128-gcm\nShadowsocks密码: ${NODE_SS_PASSWORD}\nShadowTLS密码: ${NODE_SHADOWTLS_PASSWORD}\n伪装域名: ${SHADOWTLS_SNI}\n\n${RED}重要: ShadowTLS 不支持链接格式！${NC}\n${YELLOW}请使用客户端配置文件${NC}"
+    EXTRA_INFO="Shadowsocks方法: 2022-blake3-aes-128-gcm\nShadowsocks密码: ${NODE_SS_PASSWORD}\nShadowTLS密码: ${NODE_SHADOWTLS_PASSWORD}\n伪装域名: ${SHADOWTLS_SNI}\n\n${YELLOW}提示: 请使用支持 shadow-tls 插件的客户端${NC}\n${CYAN}(如 sing-box / Shadowrocket / NekoBox / v2rayN)${NC}"
     
     # 保存新添加节点的链接（只用于显示）
     CURRENT_NEW_LINKS=""
