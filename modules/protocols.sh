@@ -879,3 +879,334 @@ EOF
     echo -e "${CYAN}请使用 sing-box 客户端运行: sing-box run -c ${CLIENT_JSON_PATH}${NC}"
     save_links_to_files
 }
+
+# ==================== CDN 协议（VLESS/VMess/Trojan + WS/gRPC/HTTPUpgrade + TLS）====================
+# 适用 Cloudflare/Gcore/雨盾 等 CDN，端口走 443 系或 80 系，客户端 address 可填优选 IP
+
+# 公共函数：交互式收集 CDN 协议通用参数
+# 输出全局变量：CDN_TRANSPORT / CDN_SNI / CDN_WS_PATH / CDN_WS_HOST / CDN_GRPC_SERVICE
+# PORT 由 read_port_with_check 设置
+_cdn_collect_common_params() {
+    local default_port="${1:-443}"
+
+    echo -e "${CYAN}支持的 CDN 端口:${NC}"
+    echo -e "  ${GREEN}HTTPS (推荐)${NC}: 443 / 8443 / 2053 / 2083 / 2087 / 2096"
+    echo -e "  ${YELLOW}HTTP  (不推荐,明文)${NC}: 80 / 8080 / 8880 / 2052 / 2082 / 2086 / 2095"
+    echo ""
+
+    # 1. 端口输入（交互式，不强制限制范围，但提示推荐值）
+    while true; do
+        read -p "端口 [默认 ${default_port}]: " input_port
+        PORT="${input_port:-$default_port}"
+        if ! [[ "$PORT" =~ ^[0-9]+$ ]] || (( PORT < 1 || PORT > 65535 )); then
+            print_error "端口无效，请输入 1-65535"; continue
+        fi
+        if check_port_in_use "$PORT"; then
+            print_warning "端口 ${PORT} 已被占用"; continue
+        fi
+        # 提示非标准端口
+        case "$PORT" in
+            443|8443|2053|2083|2087|2096|80|8080|8880|2052|2082|2086|2095) ;;
+            *)
+                print_warning "端口 ${PORT} 非 CDN 标准端口，请确认 CDN 控制台支持该端口"
+                ;;
+        esac
+        break
+    done
+
+    # 2. 传输方式
+    echo ""
+    echo -e "${CYAN}传输方式:${NC}"
+    echo -e "  ${GREEN}[1]${NC} ws           ${YELLOW}(WebSocket, CDN 全支持, 推荐)${NC}"
+    echo -e "  ${GREEN}[2]${NC} grpc         ${YELLOW}(gRPC, Cloudflare 需在面板开启 gRPC 开关)${NC}"
+    echo -e "  ${GREEN}[3]${NC} httpupgrade ${YELLOW}(HTTP Upgrade, 较新)${NC}"
+    read -p "选择 [1-3, 默认 1]: " transport_choice
+    transport_choice="${transport_choice:-1}"
+    CDN_TRANSPORT="ws"
+    case "$transport_choice" in
+        1) CDN_TRANSPORT="ws" ;;
+        2) CDN_TRANSPORT="grpc" ;;
+        3) CDN_TRANSPORT="httpupgrade" ;;
+        *) print_warning "无效选择，使用默认 ws"; CDN_TRANSPORT="ws" ;;
+    esac
+
+    # 3. SNI 域名
+    echo ""
+    echo -e "${YELLOW}请输入 SNI 域名（需与 CDN 控制台绑定的域名一致）${NC}"
+    echo -e "${CYAN}例如: ${DEFAULT_SNI1}${NC}"
+    while true; do
+        read -p "SNI 域名 [${DEFAULT_SNI}]: " CDN_SNI
+        CDN_SNI=${CDN_SNI:-${DEFAULT_SNI}}
+        if validate_sni "$CDN_SNI"; then
+            break
+        fi
+        print_warning "请重新输入有效的域名格式"
+    done
+
+    # 4. transport 相关参数
+    CDN_WS_PATH="/ws"
+    CDN_WS_HOST="$CDN_SNI"
+    CDN_GRPC_SERVICE="grpc"
+    if [[ "$CDN_TRANSPORT" == "ws" || "$CDN_TRANSPORT" == "httpupgrade" ]]; then
+        read -p "WebSocket 路径 [${CDN_WS_PATH}]: " input_path
+        [[ -n "$input_path" ]] && CDN_WS_PATH="$input_path"
+        read -p "Host 头 [${CDN_WS_HOST}]: " input_host
+        [[ -n "$input_host" ]] && CDN_WS_HOST="$input_host"
+    elif [[ "$CDN_TRANSPORT" == "grpc" ]]; then
+        read -p "gRPC service name [${CDN_GRPC_SERVICE}]: " input_grpc
+        [[ -n "$input_grpc" ]] && CDN_GRPC_SERVICE="$input_grpc"
+    fi
+
+    # 5. CDN 配置提示
+    echo ""
+    echo -e "${CYAN}===== CDN 配置提示 =====${NC}"
+    echo -e "  ${YELLOW}CDN 控制台需将 ${CDN_SNI} 的回源指向本机 ${SERVER_IP:-IP}:${PORT}${NC}"
+    echo -e "  ${YELLOW}CDN SSL 模式建议设为 Full (HTTPS 回源)${NC}"
+    echo -e "  ${YELLOW}客户端 address 可填 CDN 优选 IP/域名, SNI 必须为 ${CDN_SNI}${NC}"
+    echo ""
+}
+
+# 构建 CDN 协议的 transport JSON 片段
+_cdn_build_transport_json() {
+    case "$CDN_TRANSPORT" in
+        ws)
+            echo "\"transport\": {\"type\": \"ws\", \"path\": \"${CDN_WS_PATH}\", \"headers\": {\"Host\": \"${CDN_WS_HOST}\"}}"
+            ;;
+        grpc)
+            echo "\"transport\": {\"type\": \"grpc\", \"service_name\": \"${CDN_GRPC_SERVICE}\"}"
+            ;;
+        httpupgrade)
+            echo "\"transport\": {\"type\": \"httpupgrade\", \"path\": \"${CDN_WS_PATH}\", \"headers\": {\"Host\": \"${CDN_WS_HOST}\"}}"
+            ;;
+    esac
+}
+
+# ==================== VLESS + WS/gRPC/HTTPUpgrade + TLS (CDN) ====================
+setup_cdn_vless() {
+    echo ""
+    menu_header "VLESS + WS/gRPC + TLS (CDN 适用)"
+    _cdn_collect_common_params 443
+
+    # UUID
+    local NODE_UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null)
+    if [[ -z "$NODE_UUID" ]]; then
+        print_error "UUID 生成失败，请检查系统环境"
+        return 1
+    fi
+    print_info "节点 UUID: ${NODE_UUID}"
+
+    # 自签证书（CDN Full 模式回源会校验证书存在）
+    print_info "为 ${CDN_SNI} 生成自签证书..."
+    gen_cert_for_sni "${CDN_SNI}"
+
+    print_info "生成配置文件..."
+
+    local transport_json=$(_cdn_build_transport_json)
+    local listen_addr=$(get_listen_address)
+    local inbound="{
+  \"type\": \"vless\",
+  \"tag\": \"vless-cdn-in-${PORT}\",
+  \"listen\": \"${listen_addr}\",
+  \"listen_port\": ${PORT},
+  \"users\": [{\"uuid\": \"${NODE_UUID}\"}],
+  \"tls\": {
+    \"enabled\": true,
+    \"alpn\": [\"h2\", \"http/1.1\"],
+    \"min_version\": \"1.3\",
+    \"server_name\": \"${CDN_SNI}\",
+    \"certificate_path\": \"${CERT_DIR}/${CDN_SNI}/cert.pem\",
+    \"key_path\": \"${CERT_DIR}/${CDN_SNI}/private.key\"
+  },
+  ${transport_json}
+}"
+
+    if [[ -z "$INBOUNDS_JSON" ]]; then
+        INBOUNDS_JSON="$inbound"
+    else
+        INBOUNDS_JSON="${INBOUNDS_JSON},${inbound}"
+    fi
+
+    PROTO="VLESS-CDN-${CDN_TRANSPORT}"
+    EXTRA_INFO="UUID: ${NODE_UUID}\nSNI: ${CDN_SNI}\n传输: ${CDN_TRANSPORT}\n路径: ${CDN_WS_PATH}"
+
+    CURRENT_NEW_LINKS=""
+
+    # IPv4 链接
+    local link_ipv4=$(generate_proto_link "vless-ws" "${SERVER_IP}" "${PORT}" \
+        "uuid=${NODE_UUID}" "sni=${CDN_SNI}" "transport=${CDN_TRANSPORT}" \
+        "path=${CDN_WS_PATH}" "host=${CDN_WS_HOST}" "grpc_service=${CDN_GRPC_SERVICE}")
+    add_link "$link_ipv4" "${PROTO}" "$EXTRA_INFO" "${SERVER_IP}" "${PORT}" "${CDN_SNI}"
+    LINK="$link_ipv4"
+
+    CURRENT_NEW_LINKS="${CURRENT_NEW_LINKS}[${PROTO}] ${SERVER_IP}:${PORT} (SNI: ${CDN_SNI}, ${CDN_TRANSPORT})\n${link_ipv4}\n----------------------------------------\n\n"
+
+    # IPv6 链接
+    if [[ -n "${SERVER_IPV6}" ]]; then
+        local link_ipv6=$(generate_proto_link "vless-ws" "[${SERVER_IPV6}]" "${PORT}" \
+            "uuid=${NODE_UUID}" "sni=${CDN_SNI}" "transport=${CDN_TRANSPORT}" \
+            "path=${CDN_WS_PATH}" "host=${CDN_WS_HOST}" "grpc_service=${CDN_GRPC_SERVICE}")
+        add_link "$link_ipv6" "${PROTO}" "$EXTRA_INFO" "[${SERVER_IPV6}]" "${PORT}" "${CDN_SNI}"
+        CURRENT_NEW_LINKS="${CURRENT_NEW_LINKS}[${PROTO}] [${SERVER_IPV6}]:${PORT} (SNI: ${CDN_SNI}, ${CDN_TRANSPORT})\n${link_ipv6}\n----------------------------------------\n\n"
+    fi
+
+    INBOUND_TAGS+=("vless-cdn-in-${PORT}")
+    INBOUND_PORTS+=("${PORT}")
+    INBOUND_PROTOS+=("${PROTO}")
+    INBOUND_SNIS+=("${CDN_SNI}")
+    INBOUND_RELAY_TAGS+=("direct")
+
+    print_success "${PROTO} 配置完成 (SNI: ${CDN_SNI})"
+    save_links_to_files
+}
+
+# ==================== VMess + WS/gRPC/HTTPUpgrade + TLS (CDN) ====================
+setup_cdn_vmess() {
+    echo ""
+    menu_header "VMess + WS/gRPC + TLS (CDN 适用)"
+    _cdn_collect_common_params 443
+
+    # UUID
+    local NODE_UUID=$(uuidgen 2>/dev/null || cat /proc/sys/kernel/random/uuid 2>/dev/null)
+    if [[ -z "$NODE_UUID" ]]; then
+        print_error "UUID 生成失败，请检查系统环境"
+        return 1
+    fi
+    print_info "节点 UUID: ${NODE_UUID}"
+
+    # 自签证书
+    print_info "为 ${CDN_SNI} 生成自签证书..."
+    gen_cert_for_sni "${CDN_SNI}"
+
+    print_info "生成配置文件..."
+
+    local transport_json=$(_cdn_build_transport_json)
+    local listen_addr=$(get_listen_address)
+    local inbound="{
+  \"type\": \"vmess\",
+  \"tag\": \"vmess-cdn-in-${PORT}\",
+  \"listen\": \"${listen_addr}\",
+  \"listen_port\": ${PORT},
+  \"users\": [{\"uuid\": \"${NODE_UUID}\", \"alterId\": 0}],
+  \"tls\": {
+    \"enabled\": true,
+    \"alpn\": [\"h2\", \"http/1.1\"],
+    \"min_version\": \"1.3\",
+    \"server_name\": \"${CDN_SNI}\",
+    \"certificate_path\": \"${CERT_DIR}/${CDN_SNI}/cert.pem\",
+    \"key_path\": \"${CERT_DIR}/${CDN_SNI}/private.key\"
+  },
+  ${transport_json}
+}"
+
+    if [[ -z "$INBOUNDS_JSON" ]]; then
+        INBOUNDS_JSON="$inbound"
+    else
+        INBOUNDS_JSON="${INBOUNDS_JSON},${inbound}"
+    fi
+
+    PROTO="VMess-CDN-${CDN_TRANSPORT}"
+    EXTRA_INFO="UUID: ${NODE_UUID}\nalterId: 0\nSNI: ${CDN_SNI}\n传输: ${CDN_TRANSPORT}\n路径: ${CDN_WS_PATH}"
+
+    CURRENT_NEW_LINKS=""
+
+    # IPv4 链接
+    local link_ipv4=$(generate_proto_link "vmess-ws" "${SERVER_IP}" "${PORT}" \
+        "uuid=${NODE_UUID}" "sni=${CDN_SNI}" "transport=${CDN_TRANSPORT}" \
+        "path=${CDN_WS_PATH}" "host=${CDN_WS_HOST}" "grpc_service=${CDN_GRPC_SERVICE}")
+    add_link "$link_ipv4" "${PROTO}" "$EXTRA_INFO" "${SERVER_IP}" "${PORT}" "${CDN_SNI}"
+    LINK="$link_ipv4"
+
+    CURRENT_NEW_LINKS="${CURRENT_NEW_LINKS}[${PROTO}] ${SERVER_IP}:${PORT} (SNI: ${CDN_SNI}, ${CDN_TRANSPORT})\n${link_ipv4}\n----------------------------------------\n\n"
+
+    # IPv6 链接
+    if [[ -n "${SERVER_IPV6}" ]]; then
+        local link_ipv6=$(generate_proto_link "vmess-ws" "[${SERVER_IPV6}]" "${PORT}" \
+            "uuid=${NODE_UUID}" "sni=${CDN_SNI}" "transport=${CDN_TRANSPORT}" \
+            "path=${CDN_WS_PATH}" "host=${CDN_WS_HOST}" "grpc_service=${CDN_GRPC_SERVICE}")
+        add_link "$link_ipv6" "${PROTO}" "$EXTRA_INFO" "[${SERVER_IPV6}]" "${PORT}" "${CDN_SNI}"
+        CURRENT_NEW_LINKS="${CURRENT_NEW_LINKS}[${PROTO}] [${SERVER_IPV6}]:${PORT} (SNI: ${CDN_SNI}, ${CDN_TRANSPORT})\n${link_ipv6}\n----------------------------------------\n\n"
+    fi
+
+    INBOUND_TAGS+=("vmess-cdn-in-${PORT}")
+    INBOUND_PORTS+=("${PORT}")
+    INBOUND_PROTOS+=("${PROTO}")
+    INBOUND_SNIS+=("${CDN_SNI}")
+    INBOUND_RELAY_TAGS+=("direct")
+
+    print_success "${PROTO} 配置完成 (SNI: ${CDN_SNI})"
+    save_links_to_files
+}
+
+# ==================== Trojan + WS/gRPC/HTTPUpgrade + TLS (CDN) ====================
+setup_cdn_trojan() {
+    echo ""
+    menu_header "Trojan + WS/gRPC + TLS (CDN 适用)"
+    _cdn_collect_common_params 443
+
+    # Trojan 密码
+    local NODE_TROJAN_PASSWORD=$(openssl rand -hex 16)
+    print_info "节点密码: ${NODE_TROJAN_PASSWORD}"
+
+    # 自签证书
+    print_info "为 ${CDN_SNI} 生成自签证书..."
+    gen_cert_for_sni "${CDN_SNI}"
+
+    print_info "生成配置文件..."
+
+    local transport_json=$(_cdn_build_transport_json)
+    local listen_addr=$(get_listen_address)
+    local inbound="{
+  \"type\": \"trojan\",
+  \"tag\": \"trojan-cdn-in-${PORT}\",
+  \"listen\": \"${listen_addr}\",
+  \"listen_port\": ${PORT},
+  \"users\": [{\"password\": \"${NODE_TROJAN_PASSWORD}\"}],
+  \"tls\": {
+    \"enabled\": true,
+    \"alpn\": [\"h2\", \"http/1.1\"],
+    \"min_version\": \"1.3\",
+    \"server_name\": \"${CDN_SNI}\",
+    \"certificate_path\": \"${CERT_DIR}/${CDN_SNI}/cert.pem\",
+    \"key_path\": \"${CERT_DIR}/${CDN_SNI}/private.key\"
+  },
+  ${transport_json}
+}"
+
+    if [[ -z "$INBOUNDS_JSON" ]]; then
+        INBOUNDS_JSON="$inbound"
+    else
+        INBOUNDS_JSON="${INBOUNDS_JSON},${inbound}"
+    fi
+
+    PROTO="Trojan-CDN-${CDN_TRANSPORT}"
+    EXTRA_INFO="密码: ${NODE_TROJAN_PASSWORD}\nSNI: ${CDN_SNI}\n传输: ${CDN_TRANSPORT}\n路径: ${CDN_WS_PATH}"
+
+    CURRENT_NEW_LINKS=""
+
+    # IPv4 链接
+    local link_ipv4=$(generate_proto_link "trojan-ws" "${SERVER_IP}" "${PORT}" \
+        "password=${NODE_TROJAN_PASSWORD}" "sni=${CDN_SNI}" "transport=${CDN_TRANSPORT}" \
+        "path=${CDN_WS_PATH}" "host=${CDN_WS_HOST}" "grpc_service=${CDN_GRPC_SERVICE}")
+    add_link "$link_ipv4" "${PROTO}" "$EXTRA_INFO" "${SERVER_IP}" "${PORT}" "${CDN_SNI}"
+    LINK="$link_ipv4"
+
+    CURRENT_NEW_LINKS="${CURRENT_NEW_LINKS}[${PROTO}] ${SERVER_IP}:${PORT} (SNI: ${CDN_SNI}, ${CDN_TRANSPORT})\n${link_ipv4}\n----------------------------------------\n\n"
+
+    # IPv6 链接
+    if [[ -n "${SERVER_IPV6}" ]]; then
+        local link_ipv6=$(generate_proto_link "trojan-ws" "[${SERVER_IPV6}]" "${PORT}" \
+            "password=${NODE_TROJAN_PASSWORD}" "sni=${CDN_SNI}" "transport=${CDN_TRANSPORT}" \
+            "path=${CDN_WS_PATH}" "host=${CDN_WS_HOST}" "grpc_service=${CDN_GRPC_SERVICE}")
+        add_link "$link_ipv6" "${PROTO}" "$EXTRA_INFO" "[${SERVER_IPV6}]" "${PORT}" "${CDN_SNI}"
+        CURRENT_NEW_LINKS="${CURRENT_NEW_LINKS}[${PROTO}] [${SERVER_IPV6}]:${PORT} (SNI: ${CDN_SNI}, ${CDN_TRANSPORT})\n${link_ipv6}\n----------------------------------------\n\n"
+    fi
+
+    INBOUND_TAGS+=("trojan-cdn-in-${PORT}")
+    INBOUND_PORTS+=("${PORT}")
+    INBOUND_PROTOS+=("${PROTO}")
+    INBOUND_SNIS+=("${CDN_SNI}")
+    INBOUND_RELAY_TAGS+=("direct")
+
+    print_success "${PROTO} 配置完成 (SNI: ${CDN_SNI})"
+    save_links_to_files
+}

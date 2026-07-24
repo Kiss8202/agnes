@@ -65,13 +65,25 @@ load_inbounds_from_config() {
         if [[ "$tag" == "shadowsocks-in-"* ]]; then
             continue
         fi
-        
+
         # 判断协议类型
         local proto="unknown"
         local sni=""
-        
+
         if [[ "$tag" == *"vless-in-"* ]]; then
             proto="Reality"
+            sni=$(echo "$inbound" | jq -r '.tls.server_name // ""' 2>/dev/null)
+        elif [[ "$tag" == *"vless-cdn-in-"* ]]; then
+            local transport=$(echo "$inbound" | jq -r '.transport.type // "ws"' 2>/dev/null)
+            proto="VLESS-CDN-${transport}"
+            sni=$(echo "$inbound" | jq -r '.tls.server_name // ""' 2>/dev/null)
+        elif [[ "$tag" == *"vmess-cdn-in-"* ]]; then
+            local transport=$(echo "$inbound" | jq -r '.transport.type // "ws"' 2>/dev/null)
+            proto="VMess-CDN-${transport}"
+            sni=$(echo "$inbound" | jq -r '.tls.server_name // ""' 2>/dev/null)
+        elif [[ "$tag" == *"trojan-cdn-in-"* ]]; then
+            local transport=$(echo "$inbound" | jq -r '.transport.type // "ws"' 2>/dev/null)
+            proto="Trojan-CDN-${transport}"
             sni=$(echo "$inbound" | jq -r '.tls.server_name // ""' 2>/dev/null)
         elif [[ "$tag" == *"hy2-in-"* ]]; then
             proto="Hysteria2"
@@ -319,6 +331,90 @@ regenerate_anytls_link() {
     fi
 }
 
+# 从 inbound JSON 生成 VLESS-CDN 链接 (VLESS + WS/gRPC/HTTPUpgrade + TLS)
+regenerate_cdn_vless_link() {
+    local inbound="$1" port="$2"
+    local uuid=$(echo "$inbound" | jq -r '.users[0].uuid // ""' 2>/dev/null)
+    local sni=$(echo "$inbound" | jq -r '.tls.server_name // ""' 2>/dev/null)
+    local transport=$(echo "$inbound" | jq -r '.transport.type // "ws"' 2>/dev/null)
+    local ws_path=$(echo "$inbound" | jq -r '.transport.path // "/ws"' 2>/dev/null)
+    local ws_host=$(echo "$inbound" | jq -r '.transport.headers.Host // ""' 2>/dev/null)
+    local grpc_service=$(echo "$inbound" | jq -r '.transport.service_name // "grpc"' 2>/dev/null)
+
+    [[ -z "$sni" ]] && sni="${DEFAULT_SNI}"
+    [[ -z "$ws_host" ]] && ws_host="$sni"
+
+    if [[ -n "$uuid" ]]; then
+        local link_ipv4=$(generate_proto_link "vless-ws" "${SERVER_IP}" "${port}" \
+            "uuid=${uuid}" "sni=${sni}" "transport=${transport}" \
+            "path=${ws_path}" "host=${ws_host}" "grpc_service=${grpc_service}")
+        add_link "$link_ipv4" "VLESS-CDN" "" "${SERVER_IP}" "${port}" "${sni}"
+
+        if [[ -n "${SERVER_IPV6}" ]]; then
+            local link_ipv6=$(generate_proto_link "vless-ws" "[${SERVER_IPV6}]" "${port}" \
+                "uuid=${uuid}" "sni=${sni}" "transport=${transport}" \
+                "path=${ws_path}" "host=${ws_host}" "grpc_service=${grpc_service}")
+            add_link "$link_ipv6" "VLESS-CDN" "" "[${SERVER_IPV6}]" "${port}" "${sni}"
+        fi
+    fi
+}
+
+# 从 inbound JSON 生成 VMess-CDN 链接 (VMess + WS/gRPC + TLS)
+regenerate_cdn_vmess_link() {
+    local inbound="$1" port="$2"
+    local uuid=$(echo "$inbound" | jq -r '.users[0].uuid // ""' 2>/dev/null)
+    local sni=$(echo "$inbound" | jq -r '.tls.server_name // ""' 2>/dev/null)
+    local transport=$(echo "$inbound" | jq -r '.transport.type // "ws"' 2>/dev/null)
+    local ws_path=$(echo "$inbound" | jq -r '.transport.path // "/ws"' 2>/dev/null)
+    local ws_host=$(echo "$inbound" | jq -r '.transport.headers.Host // ""' 2>/dev/null)
+    local grpc_service=$(echo "$inbound" | jq -r '.transport.service_name // "grpc"' 2>/dev/null)
+
+    [[ -z "$sni" ]] && sni="${DEFAULT_SNI}"
+    [[ -z "$ws_host" ]] && ws_host="$sni"
+
+    if [[ -n "$uuid" ]]; then
+        local link_ipv4=$(generate_proto_link "vmess-ws" "${SERVER_IP}" "${port}" \
+            "uuid=${uuid}" "sni=${sni}" "transport=${transport}" \
+            "path=${ws_path}" "host=${ws_host}" "grpc_service=${grpc_service}")
+        add_link "$link_ipv4" "VMess-CDN" "" "${SERVER_IP}" "${port}" "${sni}"
+
+        if [[ -n "${SERVER_IPV6}" ]]; then
+            local link_ipv6=$(generate_proto_link "vmess-ws" "[${SERVER_IPV6}]" "${port}" \
+                "uuid=${uuid}" "sni=${sni}" "transport=${transport}" \
+                "path=${ws_path}" "host=${ws_host}" "grpc_service=${grpc_service}")
+            add_link "$link_ipv6" "VMess-CDN" "" "[${SERVER_IPV6}]" "${port}" "${sni}"
+        fi
+    fi
+}
+
+# 从 inbound JSON 生成 Trojan-CDN 链接 (Trojan + WS/gRPC + TLS)
+regenerate_cdn_trojan_link() {
+    local inbound="$1" port="$2"
+    local password=$(echo "$inbound" | jq -r '.users[0].password // ""' 2>/dev/null)
+    local sni=$(echo "$inbound" | jq -r '.tls.server_name // ""' 2>/dev/null)
+    local transport=$(echo "$inbound" | jq -r '.transport.type // "ws"' 2>/dev/null)
+    local ws_path=$(echo "$inbound" | jq -r '.transport.path // "/ws"' 2>/dev/null)
+    local ws_host=$(echo "$inbound" | jq -r '.transport.headers.Host // ""' 2>/dev/null)
+    local grpc_service=$(echo "$inbound" | jq -r '.transport.service_name // "grpc"' 2>/dev/null)
+
+    [[ -z "$sni" ]] && sni="${DEFAULT_SNI}"
+    [[ -z "$ws_host" ]] && ws_host="$sni"
+
+    if [[ -n "$password" ]]; then
+        local link_ipv4=$(generate_proto_link "trojan-ws" "${SERVER_IP}" "${port}" \
+            "password=${password}" "sni=${sni}" "transport=${transport}" \
+            "path=${ws_path}" "host=${ws_host}" "grpc_service=${grpc_service}")
+        add_link "$link_ipv4" "Trojan-CDN" "" "${SERVER_IP}" "${port}" "${sni}"
+
+        if [[ -n "${SERVER_IPV6}" ]]; then
+            local link_ipv6=$(generate_proto_link "trojan-ws" "[${SERVER_IPV6}]" "${port}" \
+                "password=${password}" "sni=${sni}" "transport=${transport}" \
+                "path=${ws_path}" "host=${ws_host}" "grpc_service=${grpc_service}")
+            add_link "$link_ipv6" "Trojan-CDN" "" "[${SERVER_IPV6}]" "${port}" "${sni}"
+        fi
+    fi
+}
+
 # ==================== 链接重新生成（主函数） ====================
 regenerate_links_from_config() {
     print_info "正在从配置文件重新生成链接..."
@@ -331,6 +427,9 @@ regenerate_links_from_config() {
     SHADOWTLS_LINKS=""
     HTTPS_LINKS=""
     ANYTLS_LINKS=""
+    VLESS_CDN_LINKS=""
+    VMESS_CDN_LINKS=""
+    TROJAN_CDN_LINKS=""
 
     # 加载密钥文件
     if [[ -f "${KEY_FILE}" ]]; then
@@ -383,10 +482,18 @@ regenerate_links_from_config() {
                     if [[ "$reality_enabled" == "true" ]]; then
                         regenerate_reality_link "$inbound" "$port"
                     else
-                        regenerate_https_link "$inbound" "$port"
+                        # 区分普通 HTTPS（TCP）和 CDN（带 transport）
+                        local has_transport=$(echo "$inbound" | jq -r '.transport.type // ""' 2>/dev/null)
+                        if [[ -n "$has_transport" ]]; then
+                            regenerate_cdn_vless_link "$inbound" "$port"
+                        else
+                            regenerate_https_link "$inbound" "$port"
+                        fi
                     fi
                 fi
                 ;;
+            "vmess")     regenerate_cdn_vmess_link "$inbound" "$port" ;;
+            "trojan")    regenerate_cdn_trojan_link "$inbound" "$port" ;;
             "hysteria2")  regenerate_hysteria2_link "$inbound" "$port" ;;
             "socks")      regenerate_socks5_link "$inbound" "$port" ;;
             "shadowtls")  regenerate_shadowtls_link "$inbound" "$port" ;;
@@ -401,7 +508,8 @@ regenerate_links_from_config() {
 # ==================== 统一链接生成函数 ====================
 # 根据协议类型和参数生成标准分享链接
 # 用法: generate_proto_link <proto> <ip> <port> [key=value ...]
-# 支持的协议: reality, hysteria2, socks5, shadowtls, https, anytls, anytls-reality
+# 支持的协议: reality, hysteria2, socks5, shadowtls, https, anytls, anytls-reality,
+#             vless-ws, vmess-ws, trojan-ws (CDN 适用，支持 ws/grpc/httpupgrade transport)
 generate_proto_link() {
     local proto="$1"
     local ip="$2"
@@ -413,6 +521,7 @@ generate_proto_link() {
     local obfs_type="" obfs_password="" insecure="1"
     local ss_method="" ss_password="" shadowtls_password=""
     local padding="" security=""
+    local transport="" ws_path="" ws_host="" grpc_service=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -431,6 +540,10 @@ generate_proto_link() {
             shadowtls_password=*) shadowtls_password="${1#shadowtls_password=}" ;;
             padding=*) padding="${1#padding=}" ;;
             security=*) security="${1#security=}" ;;
+            transport=*) transport="${1#transport=}" ;;
+            path=*) ws_path="${1#path=}" ;;
+            host=*) ws_host="${1#host=}" ;;
+            grpc_service=*) grpc_service="${1#grpc_service=}" ;;
         esac
         shift
     done
@@ -471,6 +584,57 @@ generate_proto_link() {
             # AnyTLS+REALITY 不生成标准链接
             link=""
             proto_label="AnyTLS+REALITY"
+            ;;
+        "vless-ws")
+            # VLESS + WS/gRPC/HTTPUpgrade + TLS，CDN 适用
+            # 客户端 address 可替换为 CDN 优选 IP/域名
+            [[ -z "$transport" ]] && transport="ws"
+            [[ -z "$ws_path" ]] && ws_path="/ws"
+            [[ -z "$ws_host" ]] && ws_host="$sni"
+            if [[ "$transport" == "grpc" ]]; then
+                [[ -z "$grpc_service" ]] && grpc_service="grpc"
+                link="vless://${uuid}@${ip}:${port}?encryption=none&security=tls&sni=${sni}&fp=${fp}&allowInsecure=${insecure}&type=grpc&serviceName=${grpc_service}#VLESS-CDN-${ip}"
+            else
+                link="vless://${uuid}@${ip}:${port}?encryption=none&security=tls&sni=${sni}&fp=${fp}&allowInsecure=${insecure}&type=${transport}&host=${ws_host}&path=${ws_path}#VLESS-CDN-${ip}"
+            fi
+            proto_label="VLESS-CDN"
+            ;;
+        "vmess-ws")
+            # VMess + WS/gRPC + TLS，CDN 适用
+            # VMess 链接为 base64 编码的 JSON
+            [[ -z "$transport" ]] && transport="ws"
+            [[ -z "$ws_path" ]] && ws_path="/ws"
+            [[ -z "$ws_host" ]] && ws_host="$sni"
+            [[ -z "$grpc_service" ]] && grpc_service="grpc"
+            local vmess_aid="0"
+            local vmess_json
+            if [[ "$transport" == "grpc" ]]; then
+                vmess_json=$(cat <<EOF
+{"v":"2","ps":"VMess-CDN-${ip}","add":"${ip}","port":"${port}","id":"${uuid}","aid":"${vmess_aid}","net":"grpc","type":"none","host":"","path":"${grpc_service}","tls":"tls","sni":"${sni}"}
+EOF
+)
+            else
+                vmess_json=$(cat <<EOF
+{"v":"2","ps":"VMess-CDN-${ip}","add":"${ip}","port":"${port}","id":"${uuid}","aid":"${vmess_aid}","net":"${transport}","type":"none","host":"${ws_host}","path":"${ws_path}","tls":"tls","sni":"${sni}"}
+EOF
+)
+            fi
+            # base64 编码（URL-safe 不要求，标准 base64 即可）
+            link="vmess://$(echo -n "$vmess_json" | base64 -w0)"
+            proto_label="VMess-CDN"
+            ;;
+        "trojan-ws")
+            # Trojan + WS/gRPC + TLS，CDN 适用
+            [[ -z "$transport" ]] && transport="ws"
+            [[ -z "$ws_path" ]] && ws_path="/ws"
+            [[ -z "$ws_host" ]] && ws_host="$sni"
+            [[ -z "$grpc_service" ]] && grpc_service="grpc"
+            if [[ "$transport" == "grpc" ]]; then
+                link="trojan://${password}@${ip}:${port}?security=tls&sni=${sni}&allowInsecure=${insecure}&type=grpc&serviceName=${grpc_service}#Trojan-CDN-${ip}"
+            else
+                link="trojan://${password}@${ip}:${port}?security=tls&sni=${sni}&allowInsecure=${insecure}&type=${transport}&host=${ws_host}&path=${ws_path}#Trojan-CDN-${ip}"
+            fi
+            proto_label="Trojan-CDN"
             ;;
         "shadowtls")
             if [[ -n "$ss_method" && -n "$ss_password" && -n "$shadowtls_password" ]]; then

@@ -30,6 +30,9 @@ GH_MIRROR=https://ghfast.top bash <(curl -sfL https://raw.githubusercontent.com/
 - **ShadowTLS v3** - TLS 流量伪装
 - **HTTPS** - 标准 HTTPS，可过 CDN
 - **AnyTLS** - 通用 TLS 协议，可启用 REALITY 伪装
+- **VLESS-CDN** - VLESS+WS/gRPC/HTTPUpgrade+TLS，过 CDN，可优选 IP
+- **VMess-CDN** - VMess+WS/gRPC+TLS，过 CDN，兼容性最强
+- **Trojan-CDN** - Trojan+WS/gRPC+TLS，过 CDN，伪装好
 
 ### 中转与分流
 - 中转配置（添加/修改/删除）

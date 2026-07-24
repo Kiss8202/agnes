@@ -16,7 +16,13 @@ show_menu() {
     echo ""
     echo -e "${GREEN}[6]${NC} AnyTLS ${CYAN}→ 通用 TLS 协议，可启用 REALITY 伪装${NC}"
     echo ""
-    read -p "选择 [1-6]: " choice
+    echo -e "${GREEN}[7]${NC} VLESS-CDN ${CYAN}→ VLESS+WS/gRPC+TLS，过 CDN，可优选 IP${NC}"
+    echo ""
+    echo -e "${GREEN}[8]${NC} VMess-CDN ${CYAN}→ VMess+WS/gRPC+TLS，过 CDN，兼容性最强${NC}"
+    echo ""
+    echo -e "${GREEN}[9]${NC} Trojan-CDN ${CYAN}→ Trojan+WS/gRPC+TLS，过 CDN，伪装好${NC}"
+    echo ""
+    read -p "选择 [1-9]: " choice
     
     case $choice in
         1)
@@ -36,6 +42,15 @@ show_menu() {
             ;;
         6)
             setup_anytls
+            ;;
+        7)
+            setup_cdn_vless
+            ;;
+        8)
+            setup_cdn_vmess
+            ;;
+        9)
+            setup_cdn_trojan
             ;;
         *)
             print_error "无效选项"
