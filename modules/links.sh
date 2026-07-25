@@ -2,7 +2,7 @@
 # ==================== 链接文件管理 ====================
 save_links_to_files() {
     mkdir -p "${LINK_DIR}"
-    
+
     echo -en "${ALL_LINKS_TEXT}" > "${ALL_LINKS_FILE}"
     echo -en "${REALITY_LINKS}" > "${REALITY_LINKS_FILE}"
     echo -en "${HYSTERIA2_LINKS}" > "${HYSTERIA2_LINKS_FILE}"
@@ -10,7 +10,10 @@ save_links_to_files() {
     echo -en "${SHADOWTLS_LINKS}" > "${SHADOWTLS_LINKS_FILE}"
     echo -en "${HTTPS_LINKS}" > "${HTTPS_LINKS_FILE}"
     echo -en "${ANYTLS_LINKS}" > "${ANYTLS_LINKS_FILE}"
-    
+    echo -en "${VLESS_CDN_LINKS}" > "${VLESS_CDN_LINKS_FILE}"
+    echo -en "${VMESS_CDN_LINKS}" > "${VMESS_CDN_LINKS_FILE}"
+    echo -en "${TROJAN_CDN_LINKS}" > "${TROJAN_CDN_LINKS_FILE}"
+
     chmod 600 "${LINK_DIR}"/*.txt 2>/dev/null || true
     chmod 700 "${LINK_DIR}" 2>/dev/null || true
     print_success "链接已保存到 ${LINK_DIR}"
@@ -522,10 +525,12 @@ generate_proto_link() {
     local ss_method="" ss_password="" shadowtls_password=""
     local padding="" security=""
     local transport="" ws_path="" ws_host="" grpc_service=""
+    local username=""
 
     while [[ $# -gt 0 ]]; do
         case "$1" in
             uuid=*) uuid="${1#uuid=}" ;;
+            username=*) username="${1#username=}" ;;
             password=*) password="${1#password=}" ;;
             sni=*) sni="${1#sni=}" ;;
             pbk=*) pbk="${1#pbk=}" ;;
@@ -677,7 +682,10 @@ add_link() {
         "SOCKS5") SOCKS5_LINKS="${SOCKS5_LINKS}${line}" ;;
         "ShadowTLS v3") SHADOWTLS_LINKS="${SHADOWTLS_LINKS}${line}" ;;
         "HTTPS") HTTPS_LINKS="${HTTPS_LINKS}${line}" ;;
-        "AnyTLS") ANYTLS_LINKS="${ANYTLS_LINKS}${line}" ;;
+        "AnyTLS"|"AnyTLS+REALITY") ANYTLS_LINKS="${ANYTLS_LINKS}${line}" ;;
+        VLESS-CDN-*) VLESS_CDN_LINKS="${VLESS_CDN_LINKS}${line}" ;;
+        VMess-CDN-*) VMESS_CDN_LINKS="${VMESS_CDN_LINKS}${line}" ;;
+        Trojan-CDN-*) TROJAN_CDN_LINKS="${TROJAN_CDN_LINKS}${line}" ;;
     esac
 }
 

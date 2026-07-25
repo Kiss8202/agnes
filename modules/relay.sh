@@ -388,7 +388,7 @@ parse_http_link() {
     if [[ "$data" =~ @ ]]; then
         local userpass=$(echo "$data" | cut -d'@' -f1)
         local username=$(echo "$userpass" | cut -d':' -f1)
-        local password=$(echo "$userpass" | cut -d':' -f2)
+        local password=$(echo "$userpass" | cut -d':' -f2-)
         local server_port=$(echo "$data" | cut -d'@' -f2 | cut -d'/' -f1 | cut -d'#' -f1 | cut -d'?' -f1)
         local _sp=($(parse_server_port "$server_port"))
         local server="${_sp[0]}"
@@ -619,6 +619,11 @@ parse_vless_link() {
     local pbk=""
     local sid=""
     local encryption="none"
+    local net="tcp"
+    local ws_path=""
+    local ws_host=""
+    local grpc_service=""
+    local fp=""
 
     if [[ -n "$params" ]]; then
         IFS='&' read -ra param_pairs <<< "$params"
@@ -632,6 +637,12 @@ parse_vless_link() {
                 pbk) pbk="$value" ;;
                 sid) sid="$value" ;;
                 encryption) encryption="$value" ;;
+                type) net="$value" ;;
+                path) ws_path="$value" ;;
+                host) ws_host="$value" ;;
+                serviceName) grpc_service="$value" ;;
+                fp) fp="$value" ;;
+                allowInsecure) ;; # 客户端参数，服务端中转不需要
             esac
         done
     fi
@@ -674,13 +685,40 @@ parse_vless_link() {
     [[ "$encryption" != "none" ]] && encryption_config=",
   \"encryption\": \"$(json_escape "$encryption")\""
 
+    # 构建 transport 配置（仅普通 TLS 支持 ws/grpc/httpupgrade，REALITY 强制 tcp）
+    local transport_config=""
+    if [[ "$security" == "tls" && "$net" != "tcp" ]]; then
+        case "$net" in
+            ws|httpupgrade)
+                local ws_headers=""
+                [[ -n "$ws_host" ]] && ws_headers=", \"headers\": {\"Host\": \"$(json_escape "$ws_host")\"}"
+                local ws_p="/"
+                [[ -n "$ws_path" ]] && ws_p="$ws_path"
+                transport_config=",
+  \"transport\": {
+    \"type\": \"$(json_escape "$net")\",
+    \"path\": \"$(json_escape "$ws_p")\"${ws_headers}
+  }"
+                ;;
+            grpc)
+                local svc="grpc"
+                [[ -n "$grpc_service" ]] && svc="$grpc_service"
+                transport_config=",
+  \"transport\": {
+    \"type\": \"grpc\",
+    \"service_name\": \"$(json_escape "$svc")\"
+  }"
+                ;;
+        esac
+    fi
+
     local tag="relay-vless-${#RELAY_TAGS[@]}"
     local relay_json="{
   \"type\": \"vless\",
   \"tag\": \"${tag}\",
   \"server\": \"$(json_escape "$server")\",
   \"server_port\": ${port},
-  \"uuid\": \"$(json_escape "$uuid")\"${encryption_config}${flow_config}${tls_config}${reality_config}
+  \"uuid\": \"$(json_escape "$uuid")\"${encryption_config}${flow_config}${tls_config}${reality_config}${transport_config}
 }"
 
     local relay_desc
@@ -763,7 +801,7 @@ parse_trojan_link() {
     
     # 构建传输层配置
     local transport_config=""
-    if [[ "$net" == "ws" ]]; then
+    if [[ "$net" == "ws" || "$net" == "httpupgrade" ]]; then
         local ws_headers=""
         if [[ -n "$host" ]]; then
             ws_headers=", \"headers\": {\"Host\": \"$(json_escape "$host")\"}"
@@ -772,7 +810,7 @@ parse_trojan_link() {
         [[ -n "$path" ]] && ws_path="$path"
         transport_config=",
   \"transport\": {
-    \"type\": \"ws\",
+    \"type\": \"$(json_escape "$net")\",
     \"path\": \"$(json_escape "$ws_path")\"${ws_headers}
   }"
     elif [[ "$net" == "grpc" ]]; then

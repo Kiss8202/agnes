@@ -170,7 +170,10 @@ show_main_menu() {
     local shadowtls_count=0
     local https_count=0
     local anytls_count=0
-    
+    local vless_cdn_count=0
+    local vmess_cdn_count=0
+    local trojan_cdn_count=0
+
     for proto in "${INBOUND_PROTOS[@]}"; do
         case "$proto" in
             "Reality") ((reality_count++)) ;;
@@ -180,11 +183,14 @@ show_main_menu() {
             "HTTPS") ((https_count++)) ;;
             "AnyTLS") ((anytls_count++)) ;;
             "AnyTLS+REALITY") ((anytls_count++)) ;;
+            VLESS-CDN-*) ((vless_cdn_count++)) ;;
+            VMess-CDN-*) ((vmess_cdn_count++)) ;;
+            Trojan-CDN-*) ((trojan_cdn_count++)) ;;
         esac
     done
-    
+
     echo -e "  ${YELLOW}当前节点数: ${GREEN}${#INBOUND_TAGS[@]}${NC}"
-    
+
     if [[ ${#INBOUND_TAGS[@]} -gt 0 ]]; then
         local node_details=""
         [[ $reality_count -gt 0 ]] && node_details="${node_details}Reality:${reality_count} "
@@ -193,7 +199,10 @@ show_main_menu() {
         [[ $shadowtls_count -gt 0 ]] && node_details="${node_details}ShadowTLS:${shadowtls_count} "
         [[ $https_count -gt 0 ]] && node_details="${node_details}HTTPS:${https_count} "
         [[ $anytls_count -gt 0 ]] && node_details="${node_details}AnyTLS:${anytls_count} "
-        
+        [[ $vless_cdn_count -gt 0 ]] && node_details="${node_details}VLESS-CDN:${vless_cdn_count} "
+        [[ $vmess_cdn_count -gt 0 ]] && node_details="${node_details}VMess-CDN:${vmess_cdn_count} "
+        [[ $trojan_cdn_count -gt 0 ]] && node_details="${node_details}Trojan-CDN:${trojan_cdn_count} "
+
         if [[ -n "$node_details" ]]; then
             echo -e "  ${CYAN}  └─ ${node_details}${NC}"
         fi
@@ -267,6 +276,10 @@ modify_node_menu() {
         "ShadowTLS v3") _modify_menu_ShadowTLS "$array_idx" "$tag" "$port" "$current_sni" "$proto" ;;
         HTTPS)          _modify_menu_HTTPS "$array_idx" "$tag" "$port" "$current_sni" "$proto" ;;
         AnyTLS|AnyTLS+REALITY) _modify_menu_AnyTLS "$array_idx" "$tag" "$port" "$current_sni" "$proto" ;;
+        VLESS-CDN-*|VMess-CDN-*|Trojan-CDN-*)
+            print_warning "CDN 协议节点暂不支持在线修改"
+            print_info "如需修改端口/SNI/transport，请删除该节点后重新添加"
+            ;;
         *)              print_warning "不支持的协议类型: ${proto}" ;;
     esac
 
@@ -299,16 +312,22 @@ config_and_view_menu() {
         echo ""
         echo -e "  ${GREEN}[8]${NC} 查看 AnyTLS 节点"
         echo ""
-        echo -e "  ${GREEN}[9]${NC} 修改节点配置"
+        echo -e "  ${GREEN}[9]${NC} 查看 VLESS-CDN 节点"
         echo ""
-        echo -e "  ${GREEN}[10]${NC} 删除单个节点"
+        echo -e "  ${GREEN}[10]${NC} 查看 VMess-CDN 节点"
         echo ""
-        echo -e "  ${GREEN}[11]${NC} 删除全部节点"
+        echo -e "  ${GREEN}[11]${NC} 查看 Trojan-CDN 节点"
+        echo ""
+        echo -e "  ${GREEN}[12]${NC} 修改节点配置"
+        echo ""
+        echo -e "  ${GREEN}[13]${NC} 删除单个节点"
+        echo ""
+        echo -e "  ${GREEN}[14]${NC} 删除全部节点"
         echo ""
         echo -e "  ${GREEN}[0]${NC} 返回主菜单"
         echo ""
-        
-        read -p "请选择 [0-11]: " cv_choice
+
+        read -p "请选择 [0-14]: " cv_choice
         
         case $cv_choice in
             1)
@@ -371,13 +390,31 @@ config_and_view_menu() {
                 pause "按回车返回..."
                 ;;
             9)
-                modify_node_menu
+                clear
+                show_protocol_links "VLESS-CDN 节点" "$VLESS_CDN_LINKS" "$YELLOW"
+                [[ -z "$VLESS_CDN_LINKS" ]] && echo "(暂无 VLESS-CDN 节点)"
+                pause "按回车返回..."
                 ;;
             10)
-                delete_single_node
+                clear
+                show_protocol_links "VMess-CDN 节点" "$VMESS_CDN_LINKS" "$YELLOW"
+                [[ -z "$VMESS_CDN_LINKS" ]] && echo "(暂无 VMess-CDN 节点)"
                 pause "按回车返回..."
                 ;;
             11)
+                clear
+                show_protocol_links "Trojan-CDN 节点" "$TROJAN_CDN_LINKS" "$YELLOW"
+                [[ -z "$TROJAN_CDN_LINKS" ]] && echo "(暂无 Trojan-CDN 节点)"
+                pause "按回车返回..."
+                ;;
+            12)
+                modify_node_menu
+                ;;
+            13)
+                delete_single_node
+                pause "按回车返回..."
+                ;;
+            14)
                 delete_all_nodes
                 pause "按回车返回..."
                 ;;

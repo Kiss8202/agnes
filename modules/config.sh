@@ -583,8 +583,8 @@ _modify_menu_AnyTLS() {
                     jq_update_config --arg tag "$tag" --arg sni "$new_sni" \
                         '(.inbounds[] | select(.tag == $tag)) |= (.tls.server_name = $sni | .tls.reality.handshake.server = $sni)'
                 else
-                    jq_update_config --arg tag "$tag" --arg sni "$new_sni" \
-                        '(.inbounds[] | select(.tag == $tag)) |= (.tls.server_name = $sni | .tls.certificate_path = ($sni | "/etc/sing-box/certs/\(.)" + "/cert.pem") | .tls.key_path = ($sni | "/etc/sing-box/certs/\(.)" + "/private.key"))'
+                    jq_update_config --arg tag "$tag" --arg sni "$new_sni" --arg certdir "$CERT_DIR" \
+                        '(.inbounds[] | select(.tag == $tag)) |= (.tls.server_name = $sni | .tls.certificate_path = ($sni | $certdir + "/" + . + "/cert.pem") | .tls.key_path = ($sni | $certdir + "/" + . + "/private.key"))'
                     gen_cert_for_sni "${new_sni}"
                 fi
                 INBOUND_SNIS[$array_idx]="$new_sni"
@@ -1038,24 +1038,27 @@ build_dns_config() {
     local custom_dns_servers=""
     for entry in "${DNS_SERVERS[@]}"; do
         IFS='|' read -r tag type server desc <<< "$entry"
+        # 字段转义，防止特殊字符破坏 JSON
+        local esc_tag=$(json_escape "$tag")
+        local esc_server=$(json_escape "$server")
         local dns_server_json=""
         case "$type" in
             "doh")
                 if [[ $SB_GE_1_12 -eq 1 ]]; then
-                    dns_server_json="{\"tag\": \"${tag}\", \"type\": \"https\", \"server\": \"${server}\", \"server_port\": 443, \"domain_resolver\": \"local\"}"
+                    dns_server_json="{\"tag\": \"${esc_tag}\", \"type\": \"https\", \"server\": \"${esc_server}\", \"server_port\": 443, \"domain_resolver\": \"local\"}"
                 else
-                    dns_server_json="{\"tag\": \"${tag}\", \"type\": \"https\", \"server\": \"${server}\", \"server_port\": 443, \"address_resolver\": \"local\"}"
+                    dns_server_json="{\"tag\": \"${esc_tag}\", \"type\": \"https\", \"server\": \"${esc_server}\", \"server_port\": 443, \"address_resolver\": \"local\"}"
                 fi
                 ;;
             "dot")
                 if [[ $SB_GE_1_12 -eq 1 ]]; then
-                    dns_server_json="{\"tag\": \"${tag}\", \"type\": \"tls\", \"server\": \"${server}\", \"server_port\": 853, \"domain_resolver\": \"local\"}"
+                    dns_server_json="{\"tag\": \"${esc_tag}\", \"type\": \"tls\", \"server\": \"${esc_server}\", \"server_port\": 853, \"domain_resolver\": \"local\"}"
                 else
-                    dns_server_json="{\"tag\": \"${tag}\", \"type\": \"tls\", \"server\": \"${server}\", \"server_port\": 853, \"address_resolver\": \"local\"}"
+                    dns_server_json="{\"tag\": \"${esc_tag}\", \"type\": \"tls\", \"server\": \"${esc_server}\", \"server_port\": 853, \"address_resolver\": \"local\"}"
                 fi
                 ;;
             "udp"|*)
-                dns_server_json="{\"tag\": \"${tag}\", \"type\": \"udp\", \"server\": \"${server}\"}"
+                dns_server_json="{\"tag\": \"${esc_tag}\", \"type\": \"udp\", \"server\": \"${esc_server}\"}"
                 ;;
         esac
         if [[ -n "$custom_dns_servers" ]]; then

@@ -15,6 +15,7 @@ CONFIG_FILE="/etc/sing-box/config.json"
 INSTALL_DIR="/usr/local/bin"
 CERT_DIR="/etc/sing-box/certs"
 LINK_DIR="/etc/sing-box/links"
+# 各协议链接文件路径（CDN 协议单独保存，便于分类查看）
 KEY_FILE="/etc/sing-box/keys.txt"
 DNS_CONFIG_FILE="/etc/sing-box/dns.conf"
 
@@ -26,6 +27,9 @@ SOCKS5_LINKS_FILE="${LINK_DIR}/socks5.txt"
 SHADOWTLS_LINKS_FILE="${LINK_DIR}/shadowtls.txt"
 HTTPS_LINKS_FILE="${LINK_DIR}/https.txt"
 ANYTLS_LINKS_FILE="${LINK_DIR}/anytls.txt"
+VLESS_CDN_LINKS_FILE="${LINK_DIR}/vless-cdn.txt"
+VMESS_CDN_LINKS_FILE="${LINK_DIR}/vmess-cdn.txt"
+TROJAN_CDN_LINKS_FILE="${LINK_DIR}/trojan-cdn.txt"
 
 # 脚本路径
 SCRIPT_PATH=$(readlink -f "$0" 2>/dev/null || realpath "$0" 2>/dev/null || echo "$0")
@@ -40,6 +44,9 @@ SOCKS5_LINKS=""
 SHADOWTLS_LINKS=""
 HTTPS_LINKS=""
 ANYTLS_LINKS=""
+VLESS_CDN_LINKS=""
+VMESS_CDN_LINKS=""
+TROJAN_CDN_LINKS=""
 
 # IP 配置
 SERVER_IPV6=""
