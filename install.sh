@@ -68,12 +68,13 @@ build_download_urls() {
 }
 
 # 多源下载：依次尝试 URL 列表，第一个成功即返回
+# 强制 IPv4：避免部分服务器 IPv6 黑洞（DNS 优先返回 AAAA 但路由不通）导致 curl 卡死
 multi_source_download() {
     local output_file="$1"
     shift
     local urls=("$@")
     for url in "${urls[@]}"; do
-        if curl -sfL --connect-timeout 10 --max-time 60 "${url}" -o "${output_file}" 2>/dev/null; then
+        if curl -4 -sfL --connect-timeout 10 --max-time 60 "${url}" -o "${output_file}" 2>/dev/null; then
             return 0
         fi
     done
