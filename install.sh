@@ -89,7 +89,8 @@ multi_source_download() {
 
 # 下载并解压模块压缩包
 download_modules_archive() {
-    local tmp_file=$(mktemp /tmp/sb-modules.XXXXXX.tar.gz)
+    # mktemp 模板必须以 XXXXXX 结尾（BusyBox mktemp 不支持带后缀的模板）
+    local tmp_file=$(mktemp /tmp/sb-modules.XXXXXX)
     echo -n "[引导] 下载模块压缩包 ... "
 
     local release_urls=($(build_download_urls "$GH_RELEASE_URL"))
@@ -125,7 +126,7 @@ download_modules_raw() {
         echo -n "[引导] 下载模块 ${module}.sh ... "
         local raw_urls=($(build_download_urls "${GH_RAW_URL}/${module}.sh"))
         local tmp_mod
-        tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX.sh) || { echo "失败（创建临时文件失败）"; return 1; }
+        tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX) || { echo "失败（创建临时文件失败）"; return 1; }
         if multi_source_download "${tmp_mod}" "${raw_urls[@]}"; then
             # 校验下载内容：必须是 shell 脚本（shebang 或注释开头），防止镜像返回 HTML 错误页被 source 执行
             if [[ ! -s "${tmp_mod}" ]] || ! head -1 "${tmp_mod}" | grep -qE '^#!|^#'; then
@@ -185,7 +186,7 @@ self_update_install() {
     local install_urls=($(build_download_urls "$GH_INSTALL_RAW_URL"))
     # 临时文件放在目标同目录，保证 mv 原子替换（同文件系统）
     local tmp_install
-    tmp_install=$(mktemp "${self_path}.XXXXXX.sh") || { echo "[引导] 自更新创建临时文件失败"; return 0; }
+    tmp_install=$(mktemp "${self_path}.XXXXXX") || { echo "[引导] 自更新创建临时文件失败"; return 0; }
     if ! multi_source_download "$tmp_install" "${install_urls[@]}"; then
         rm -f "$tmp_install"
         echo "[引导] install.sh 自更新下载失败，继续使用本地版本"
@@ -245,7 +246,7 @@ else
                 echo -n "[引导] 更新模块 ${module}.sh ... "
                 local raw_urls=($(build_download_urls "${GH_RAW_URL}/${module}.sh"))
                 local tmp_mod
-                tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX.sh) || { echo "失败（创建临时文件失败）"; continue; }
+                tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX) || { echo "失败（创建临时文件失败）"; continue; }
                 if multi_source_download "${tmp_mod}" "${raw_urls[@]}" \
                    && [[ -s "${tmp_mod}" ]] \
                    && head -1 "${tmp_mod}" | grep -qE '^#!|^#'; then

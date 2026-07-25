@@ -6,20 +6,21 @@
 
 > 安装命令统一用 `sh` 启动（非 `bash`）。脚本会自动检测并安装 bash 后用 bash 重新执行自身，Alpine 等默认无 bash 的系统也能直接运行。
 > 模块下载内部已自动适配双栈 / 纯 IPv4 / 纯 IPv6 环境（优先 IPv4，失败回退 IPv6，避免 IPv6 黑洞卡死）。
+> 首次下载 install.sh 若卡在 `Connecting`（IPv6 黑洞），可加 `--inet4-only`（GNU wget）或改用 `curl -4`。
 
 ### 国际机器
 ```bash
-wget -4 -O /root/install.sh https://raw.githubusercontent.com/kiss8202/Trae/main/install.sh 2>/dev/null || wget -6 -O /root/install.sh https://raw.githubusercontent.com/kiss8202/Trae/main/install.sh; sh /root/install.sh
+wget -O /root/install.sh https://raw.githubusercontent.com/kiss8202/Trae/main/install.sh && sh /root/install.sh
 ```
 
 ### 国内机器（使用镜像）
 ```bash
-wget -4 -O /root/install.sh https://ghfast.top/https://raw.githubusercontent.com/Kiss8202/Trae/main/install.sh 2>/dev/null || wget -6 -O /root/install.sh https://ghfast.top/https://raw.githubusercontent.com/Kiss8202/Trae/main/install.sh; sh /root/install.sh
+wget -O /root/install.sh https://ghfast.top/https://raw.githubusercontent.com/Kiss8202/Trae/main/install.sh && sh /root/install.sh
 ```
 
 或指定镜像变量（推荐，模块下载也会走镜像）：
 ```bash
-GH_MIRROR=https://ghfast.top sh -c "$(curl -4 -sfL https://raw.githubusercontent.com/kiss8202/Trae/main/install.sh 2>/dev/null || curl -6 -sfL https://raw.githubusercontent.com/kiss8202/Trae/main/install.sh)"
+GH_MIRROR=https://ghfast.top sh -c "$(curl -sfL https://raw.githubusercontent.com/kiss8202/Trae/main/install.sh)"
 ```
 
 安装完成后输入 `sb` 即可进入管理菜单。
