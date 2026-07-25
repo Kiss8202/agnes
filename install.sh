@@ -91,30 +91,50 @@ multi_source_download() {
 download_modules_archive() {
     # mktemp 模板必须以 XXXXXX 结尾（BusyBox mktemp 不支持带后缀的模板）
     local tmp_file=$(mktemp /tmp/sb-modules.XXXXXX)
+    local tmp_dir=$(mktemp -d /tmp/sb-modules-ex.XXXXXX)
     echo -n "[引导] 下载模块压缩包 ... "
 
     local release_urls=($(build_download_urls "$GH_RELEASE_URL"))
     if multi_source_download "${tmp_file}" "${release_urls[@]}"; then
         # 验证是否为有效的 gzip 文件
         if tar -tzf "${tmp_file}" >/dev/null 2>&1; then
-            mkdir -p "${MODULES_DIR}"
-            if tar -xzf "${tmp_file}" -C "${MODULES_DIR}" 2>/dev/null; then
-                rm -f "${tmp_file}"
-                echo "完成"
-                return 0
+            if tar -xzf "${tmp_file}" -C "${tmp_dir}" 2>/dev/null; then
+                # 校验每个模块语法，全部通过才替换正式目录
+                local mod_failed=""
+                for module in core install links dns relay protocols config tune menu; do
+                    if [[ ! -f "${tmp_dir}/${module}.sh" ]] \
+                       || ! head -1 "${tmp_dir}/${module}.sh" | grep -qE '^#!|^#' \
+                       || ! bash -n "${tmp_dir}/${module}.sh" 2>/dev/null; then
+                        mod_failed="$module"
+                        break
+                    fi
+                done
+                if [[ -z "$mod_failed" ]]; then
+                    mkdir -p "${MODULES_DIR}"
+                    for module in core install links dns relay protocols config tune menu; do
+                        mv "${tmp_dir}/${module}.sh" "${MODULES_DIR}/${module}.sh"
+                    done
+                    rm -rf "${tmp_dir}" "${tmp_file}"
+                    echo "完成"
+                    return 0
+                else
+                    echo "失败（模块 ${mod_failed} 语法校验未通过）"
+                    rm -rf "${tmp_dir}" "${tmp_file}"
+                    return 1
+                fi
             else
                 echo "解压失败"
-                rm -f "${tmp_file}"
+                rm -rf "${tmp_dir}" "${tmp_file}"
                 return 1
             fi
         else
             echo "文件无效"
-            rm -f "${tmp_file}"
+            rm -rf "${tmp_dir}" "${tmp_file}"
             return 1
         fi
     else
         echo "下载失败"
-        rm -f "${tmp_file}"
+        rm -rf "${tmp_dir}" "${tmp_file}"
         return 1
     fi
 }
@@ -237,29 +257,50 @@ if [[ ! -d "$MODULES_DIR" ]]; then
 else
     # 模块目录已存在，检查是否需要更新
     if check_version_update; then
+        local update_ok=0
         # 优先从 Releases 下载
-        if ! download_modules_archive; then
+        if download_modules_archive; then
+            update_ok=1
+        else
             echo "[引导] Releases 下载失败，回退到逐个下载..."
-            # 复用 download_modules_raw 的校验逻辑，但允许单个失败保留旧版本
-            mkdir -p "${MODULES_DIR}"
-            for module in core install links dns relay protocols config tune menu; do
-                echo -n "[引导] 更新模块 ${module}.sh ... "
-                local raw_urls=($(build_download_urls "${GH_RAW_URL}/${module}.sh"))
-                local tmp_mod
-                tmp_mod=$(mktemp /tmp/sb-mod.XXXXXX) || { echo "失败（创建临时文件失败）"; continue; }
-                if multi_source_download "${tmp_mod}" "${raw_urls[@]}" \
-                   && [[ -s "${tmp_mod}" ]] \
-                   && head -1 "${tmp_mod}" | grep -qE '^#!|^#'; then
-                    mv "${tmp_mod}" "${MODULES_DIR}/${module}.sh"
-                    echo "完成"
+            # 原子更新：全部下载到临时目录校验通过后，才整体替换正式目录
+            # 任一模块失败则整体回滚，保留旧版本完整可用，避免新旧混合导致脚本崩溃
+            local tmp_dir
+            tmp_dir=$(mktemp -d /tmp/sb-update.XXXXXX) || { echo "[引导] 创建临时目录失败，跳过更新"; }
+            if [[ -n "$tmp_dir" ]]; then
+                local all_ok=1
+                for module in core install links dns relay protocols config tune menu; do
+                    echo -n "[引导] 更新模块 ${module}.sh ... "
+                    local raw_urls=($(build_download_urls "${GH_RAW_URL}/${module}.sh"))
+                    local tmp_mod="${tmp_dir}/${module}.sh"
+                    if multi_source_download "${tmp_mod}" "${raw_urls[@]}" \
+                       && [[ -s "${tmp_mod}" ]] \
+                       && head -1 "${tmp_mod}" | grep -qE '^#!|^#' \
+                       && bash -n "${tmp_mod}" 2>/dev/null; then
+                        echo "完成"
+                    else
+                        rm -f "${tmp_mod}"
+                        echo "失败（语法校验未通过）"
+                        all_ok=0
+                        break
+                    fi
+                done
+
+                if [[ $all_ok -eq 1 ]]; then
+                    # 全部校验通过，原子替换
+                    for module in core install links dns relay protocols config tune menu; do
+                        mv "${tmp_dir}/${module}.sh" "${MODULES_DIR}/${module}.sh"
+                    done
+                    rmdir "${tmp_dir}" 2>/dev/null
+                    update_ok=1
                 else
-                    rm -f "${tmp_mod}"
-                    echo "失败（保留旧版本）"
+                    echo "[引导] 部分模块更新失败，已整体回滚保留旧版本"
+                    rm -rf "${tmp_dir}"
                 fi
-            done
+            fi
         fi
-        # 同步更新 install.sh 本身并重新执行（避免引导脚本与新模块不一致）
-        self_update_install "$@"
+        # 只有模块全部更新成功，才同步更新 install.sh 并重新执行
+        [[ $update_ok -eq 1 ]] && self_update_install "$@"
     fi
 fi
 
