@@ -78,6 +78,9 @@ cleanup_links() {
     SHADOWTLS_LINKS=""
     HTTPS_LINKS=""
     ANYTLS_LINKS=""
+    VLESS_CDN_LINKS=""
+    VMESS_CDN_LINKS=""
+    TROJAN_CDN_LINKS=""
 }
 
 regenerate_all_links() {

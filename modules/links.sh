@@ -209,24 +209,16 @@ regenerate_hysteria2_link() {
     local sni=$(echo "$inbound" | jq -r '.tls.server_name // ""' 2>/dev/null)
     local obfs_type=$(echo "$inbound" | jq -r '.obfs.type // ""' 2>/dev/null)
     local obfs_password=$(echo "$inbound" | jq -r '.obfs.password // ""' 2>/dev/null)
-    local port_range_num=$(echo "$inbound" | jq -r '.port_range // 0' 2>/dev/null)
-    local listen_port=$(echo "$inbound" | jq -r '.listen_port' 2>/dev/null)
 
     [[ -z "$sni" ]] && sni="${DEFAULT_SNI}"
 
     if [[ -n "$password" ]]; then
-        local port_part="$port"
-        if [[ "$port_range_num" -gt 1 ]]; then
-            local end_port=$(( listen_port + port_range_num - 1 ))
-            port_part="${listen_port}-${end_port}"
-        fi
-
-        local link_ipv4=$(generate_proto_link "hysteria2" "${SERVER_IP}" "${port_part}" "password=${password}" "sni=${sni}" "obfs_type=${obfs_type}" "obfs_password=${obfs_password}")
-        add_link "$link_ipv4" "Hysteria2" "" "${SERVER_IP}" "${port_part}" "${sni}"
+        local link_ipv4=$(generate_proto_link "hysteria2" "${SERVER_IP}" "${port}" "password=${password}" "sni=${sni}" "obfs_type=${obfs_type}" "obfs_password=${obfs_password}")
+        add_link "$link_ipv4" "Hysteria2" "" "${SERVER_IP}" "${port}" "${sni}"
 
         if [[ -n "${SERVER_IPV6}" ]]; then
-            local link_ipv6=$(generate_proto_link "hysteria2" "[${SERVER_IPV6}]" "${port_part}" "password=${password}" "sni=${sni}" "obfs_type=${obfs_type}" "obfs_password=${obfs_password}")
-            add_link "$link_ipv6" "Hysteria2" "" "[${SERVER_IPV6}]" "${port_part}" "${sni}"
+            local link_ipv6=$(generate_proto_link "hysteria2" "[${SERVER_IPV6}]" "${port}" "password=${password}" "sni=${sni}" "obfs_type=${obfs_type}" "obfs_password=${obfs_password}")
+            add_link "$link_ipv6" "Hysteria2" "" "[${SERVER_IPV6}]" "${port}" "${sni}"
         fi
     fi
 }

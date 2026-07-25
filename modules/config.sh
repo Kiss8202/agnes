@@ -1078,7 +1078,9 @@ build_dns_config() {
 
         if [[ "$match_type" == "inbound" ]]; then
             # 节点级 DNS 分流
-            rule_json="{\"inbound\": [\"${match_value}\"], \"server\": \"${dns_tag}\"}"
+            local esc_inbound=$(json_escape "$match_value")
+            local esc_dns_tag=$(json_escape "$dns_tag")
+            rule_json="{\"inbound\": [\"${esc_inbound}\"], \"server\": \"${esc_dns_tag}\"}"
         else
             # 域名级 DNS 分流（支持逗号分隔多个域名）
             local rule_field=""
@@ -1089,9 +1091,21 @@ build_dns_config() {
                 *)              continue ;;
             esac
 
-            # 将逗号分隔的域名转为 JSON 数组
-            local domains_json=$(echo "$match_value" | awk -F',' '{for(i=1;i<=NF;i++){gsub(/^ +| +$/,"",$i);printf "\"%s\"", $i; if(i<NF) printf ","}}')
-            rule_json="{\"${rule_field}\": [${domains_json}], \"server\": \"${dns_tag}\"}"
+            # 将逗号分隔的域名转为 JSON 数组（每个域名需转义，防止特殊字符破坏 JSON）
+            local domains_json=""
+            local IFS=','
+            read -ra _dns_domains <<< "$match_value"
+            unset IFS
+            for _d in "${_dns_domains[@]}"; do
+                _d="${_d#"${_d%%[![:space:]]*}"}"
+                _d="${_d%"${_d##*[![:space:]]}"}"
+                [[ -z "$_d" ]] && continue
+                local esc_d=$(json_escape "$_d")
+                [[ -n "$domains_json" ]] && domains_json+=","
+                domains_json+="\"${esc_d}\""
+            done
+            local esc_dns_tag=$(json_escape "$dns_tag")
+            rule_json="{\"${rule_field}\": [${domains_json}], \"server\": \"${esc_dns_tag}\"}"
         fi
 
         if [[ -n "$dns_rules" ]]; then

@@ -121,35 +121,6 @@ setup_hysteria2() {
         print_warning "请重新输入有效的域名格式"
     done
 
-    # 端口跳跃（port hopping）：监听一个端口范围，提升抗封锁能力
-    echo -e "${YELLOW}是否启用端口跳跃 (port hopping)？(y/N)${NC}"
-    echo -e "${CYAN}提示: 监听一个端口范围，客户端随机选择端口连接，抗封锁更强${NC}"
-    echo -e "${CYAN}注意: 启用后需在防火墙放行该范围 (UDP)${NC}"
-    read -p "启用端口跳跃? [y/N]: " ENABLE_PORT_HOP
-    ENABLE_PORT_HOP=${ENABLE_PORT_HOP:-N}
-    local PORT_RANGE_CONFIG=""
-    local PORT_HOP_STR=""
-    local HY2_PORT_STR="${PORT}"
-    if [[ "$ENABLE_PORT_HOP" =~ ^[Yy]$ ]]; then
-        while true; do
-            echo -e "${CYAN}格式: 起始端口-结束端口 (如 20000-50000)${NC}"
-            read -p "端口范围: " port_hop_input
-            if [[ "$port_hop_input" =~ ^([0-9]+)-([0-9]+)$ ]]; then
-                local hop_start=${BASH_REMATCH[1]}
-                local hop_end=${BASH_REMATCH[2]}
-                if (( hop_start >= 1 && hop_end <= 65535 && hop_end > hop_start )); then
-                    PORT_HOP_STR="${hop_start}-${hop_end}"
-                    PORT_RANGE_CONFIG=",
-  \"port_range\": \"${PORT_HOP_STR}\""
-                    HY2_PORT_STR="${PORT_HOP_STR}"
-                    print_info "端口跳跃范围: ${PORT_HOP_STR}"
-                    break
-                fi
-            fi
-            print_error "格式无效，请使用 起始-结束 格式，且结束 > 起始"
-        done
-    fi
-    
     # 是否启用 Salamander 混淆
     read -p "是否启用 Salamander 混淆？(y/N): " ENABLE_OBFS
     ENABLE_OBFS=${ENABLE_OBFS:-N}
@@ -217,7 +188,7 @@ setup_hysteria2() {
   \"type\": \"hysteria2\",
   \"tag\": \"hy2-in-${PORT}\",
   \"listen\": \"${listen_addr}\",
-  \"listen_port\": ${PORT}${PORT_RANGE_CONFIG},
+  \"listen_port\": ${PORT},
   \"users\": [{\"password\": \"${NODE_HY2_PASSWORD}\"}]${BW_CONFIG}${IGNORE_CLIENT_BW},
   \"tls\": {
     \"enabled\": true,
