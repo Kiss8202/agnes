@@ -68,13 +68,19 @@ build_download_urls() {
 }
 
 # 多源下载：依次尝试 URL 列表，第一个成功即返回
-# 强制 IPv4：避免部分服务器 IPv6 黑洞（DNS 优先返回 AAAA 但路由不通）导致 curl 卡死
+# 优先 IPv4（避免部分服务器 IPv6 黑洞导致卡死），IPv4 失败再回退到 IPv6（短超时快速失败）
+# 兼容三种环境：双栈 / 纯 IPv4 / 纯 IPv6
 multi_source_download() {
     local output_file="$1"
     shift
     local urls=("$@")
     for url in "${urls[@]}"; do
-        if curl -4 -sfL --connect-timeout 10 --max-time 60 "${url}" -o "${output_file}" 2>/dev/null; then
+        # 1) 优先 IPv4：大多数环境适用，且能避开 IPv6 黑洞
+        if curl -4 -sfL --connect-timeout 8 --max-time 60 "${url}" -o "${output_file}" 2>/dev/null; then
+            return 0
+        fi
+        # 2) 回退 IPv6：用短超时快速判断 IPv6 是否可用，避免黑洞卡死
+        if curl -6 -sfL --connect-timeout 5 --max-time 60 "${url}" -o "${output_file}" 2>/dev/null; then
             return 0
         fi
     done
