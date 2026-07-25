@@ -4,19 +4,22 @@
 
 ## 安装
 
+> 安装命令统一用 `sh` 启动（非 `bash`）。脚本会自动检测并安装 bash 后用 bash 重新执行自身，Alpine 等默认无 bash 的系统也能直接运行。
+> 若机器 IPv6 路由不通导致卡在 `Connecting`，wget 加 `-4` 强制 IPv4 即可。
+
 ### 国际机器
 ```bash
-wget -O /root/install.sh https://raw.githubusercontent.com/kiss8202/Trae/main/install.sh && bash /root/install.sh
+wget -4 -O /root/install.sh https://raw.githubusercontent.com/kiss8202/Trae/main/install.sh && sh /root/install.sh
 ```
 
 ### 国内机器（使用镜像）
 ```bash
-wget -O /root/install.sh https://ghfast.top/https://raw.githubusercontent.com/Kiss8202/Trae/main/install.sh && bash /root/install.sh
+wget -4 -O /root/install.sh https://ghfast.top/https://raw.githubusercontent.com/Kiss8202/Trae/main/install.sh && sh /root/install.sh
 ```
 
 或指定镜像变量（推荐，模块下载也会走镜像）：
 ```bash
-GH_MIRROR=https://ghfast.top bash <(curl -sfL https://raw.githubusercontent.com/Kiss8202/Trae/main/install.sh)
+GH_MIRROR=https://ghfast.top sh <(curl -4 -sfL https://raw.githubusercontent.com/kiss8202/Trae/main/install.sh)
 ```
 
 安装完成后输入 `sb` 即可进入管理菜单。
