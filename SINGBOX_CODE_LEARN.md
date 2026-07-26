@@ -396,22 +396,116 @@ adapter/inbound/registry.go
 6. **更新文档**: `docs/configuration/outbound/myproto.md`
 7. **更新测试**: `test/` 中添加测试用例
 
-## 12. 关键依赖库
+## 12. Box 启动流程
+
+sing-box 的 `box.go` 是核心启动入口，`Box` struct 管理所有子组件的生命周期：
+
+```go
+type Box struct {
+    logFactory          log.Factory
+    network             *route.NetworkManager      // 网络接口管理
+    endpoint            *endpoint.Manager          // Endpoint (TUN/TProxy) 管理
+    inbound             *inbound.Manager           // Inbound 管理器
+    outbound            *outbound.Manager          // Outbound 管理器
+    service             *service.Manager           // 服务 (NTP/ACME/DERP等)
+    certificateProvider *certificate.Manager       // 证书提供者
+    dnsTransport        *dns.TransportManager      // DNS 传输管理
+    dnsRouter           *dns.Router                // DNS 路由
+    connection          *route.ConnectionManager   // 连接管理
+    router              *route.Router              // 路由引擎
+}
+```
+
+启动顺序 (`Start()`):
+1. StartStateCreating — 创建阶段内部服务
+2. StartStatePostStart — 后置启动各子系统
+3. StartStateStarted — 正式启动全部组件
+
+关闭顺序 (`Close()`)，按以下逆序关闭:
+service → inbound → certificate-provider → endpoint → outbound → router → connection → dns-router → dns-transport → network → logger
+
+## 13. Selector / URLTest 分组协议
+
+分组协议位于 `protocol/group/` 下，提供两种出站分组类型：
+
+### Selector (手动选择)
+```go
+func RegisterSelector(registry *outbound.Registry) {
+    outbound.Register[option.SelectorOutboundOptions](registry, C.TypeSelector, NewSelector)
+}
+```
+- 维护一组 outbound tag 列表
+- 用户手动选择一个作为当前使用的 outbound
+- 保存历史选择 (`selected`)
+- 支持 `InterruptExistConnections` 中断已有连接
+
+### URLTest (自动测速)
+```go
+// protocol/group/urltest.go
+```
+- 自动测试每个 outbound 的延迟
+- 选择延迟最低的 outbound
+- 定期重新测速
+
+JSON 配置示例:
+```json
+{
+  "type": "selector",
+  "tag": "proxy",
+  "outbounds": ["vless-out", "vmess-out", "trojan-out"],
+  "default": "vless-out"
+}
+{
+  "type": "urltest",
+  "tag": "auto-test",
+  "outbounds": ["node1", "node2", "node3"],
+  "interval": "10m",
+  "tolerance": 5,
+  "interrupt_exist_connections": false
+}
+```
+
+## 14. TUN 入站实现
+
+TUN 模式在 `protocol/tun/inbound.go` 中实现，负责将操作系统级的 TUN 设备映射为 sing-box 的入站连接：
+
+```go
+func RegisterInbound(registry *inbound.Registry) {
+    inbound.Register[option.TunInboundOptions](registry, C.TypeTun, NewInbound)
+}
+```
+
+关键字段：
+- `tunOptions`: TUN 设备配置 (地址、MTU、自动路由等)
+- `stack`: 协议栈模式 (system/Land/Cute)
+- `udpTimeout`: UDP 会话超时时间
+- `udpMapping`: NAT 映射表
+- `autoRedirect`: 自动透明代理重定向 (iptables 规则)
+- `dnsHijackAddress`: DNS 劫持地址列表
+
+1.12.0+ 废弃了 legacy address fields (Inet4Address 等)，改用 Address 数组。
+
+## 15. 关键依赖库
 
 从 go.mod 中提取的关键依赖：
 
 | 库 | 用途 |
 |----|-----|
-| github.com/sagernet/sing-vmess | VMess 协议核心库 |
+| github.com/sagernet/sing-vmess | VMess 协议核心库 (独立仓库) |
+| github.com/sagernet/sing-shadowsocks2 | Shadowsocks 协议核心库 |
+| github.com/sagernet/sing-tun | TUN 设备抽象层 |
+| github.com/anytls/sing-anytls | AnyTLS 协议 |
 | github.com/caddyserver/certmagic | TLS 证书管理 (ACME) |
+| github.com/caddyserver/zerossl | ZeroSSL ACME 提供商 |
 | github.com/coder/websocket | WebSocket 支持 |
 | github.com/creack/pty | PTY (伪终端) 支持 |
 | github.com/cretz/bine | Tor 集成 |
 | github.com/go-chi/chi/v5 | HTTP 路由 (Clash API) |
 | filippo.io/age | 加密密钥派生 |
-| github.com/anytls/sing-anytls | AnyTLS 协议 |
 | github.com/insomniacslk/dhcp | DHCP 支持 |
 | github.com/jsimonetti/rtnetlink | Linux 路由 netlink |
+| go4.org/netipx | IP 集操作 |
+| github.com/database64128/tfo-go/v2 | TCP Fast Open |
 
 ## 13. 调试和运维命令
 
@@ -432,14 +526,15 @@ journalctl -u sing-box -f
 svc_status sing-box  # 或 systemctl status sing-box
 ```
 
-## 14. 版本兼容性要点
+## 16. 版本兼容性要点
 
 | 版本 | 关键变化 |
 |------|---------|
 | 1.8.0 | 引入 rule_set (替代 geoip/geosite) |
-| 1.11.0 | 移除 DNS outbound, 引入 network_strategy/network_type/fallback |
-| 1.12.0 | 移除 geoip/geosite, 引入 default_domain_resolver, address_resolver → domain_resolver |
-| 1.13.0 | 完全移除 DNS outbound |
+| 1.10.0 | TUN legacy address fields deprecated |
+| 1.11.0 | 移除 DNS outbound, 引入 network_strategy/network_type/fallback; GSO deprecated |
+| 1.12.0 | 完全移除 GeoIP/GeoSite, 引入 default_domain_resolver, legacy tun fields removed, Address array instead of Inet4Address |
+| 1.13.0 | 完全移除 DNS outbound, legacy inbound fields removed |
 | 1.14.0 | 新增 find_neighbor, dhcp_lease_files, optimistic DNS, initial_path for rule-sets |
 
 <!-- ⟦ sing-box 源代码学习笔记已整理完成，涵盖架构、协议、传输、路由等核心知识点 ⟧ -->
