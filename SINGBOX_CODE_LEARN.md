@@ -370,19 +370,54 @@ adapter/inbound/registry.go
 
 注意：multiplex 和 udp_over_tcp 互斥。
 
-## 10. config.sh 与官方配置的映射关系
+## 10. config.sh jq 操作与 Go 源码映射
 
-我们的 install.sh / config.sh 使用了 jq 操作 JSON 配置，以下是关键映射：
+我们的 install.sh / config.sh 使用了 **jq** 操作 JSON 配置，以下是关键映射关系：
 
-| config.sh 操作 | 对应的 sing-box 配置项 | 对应源码位置 |
-|---------------|----------------------|-------------|
-| `jq '.inbounds += [...]'` | `inbounds` 数组 | `adapter/inbound/` |
-| `jq '.outbounds += [...]'` | `outbounds` 数组 | `adapter/outbound/` |
-| `tls.reality.handshake` | Reality 回落目标 | `common/tls/` + protocol/*/outbound.go |
-| `tls.certificate_path` | 证书路径 | `common/certificate/` |
-| `route.rules[]` | 路由规则 | `route/rule/` |
-| `dns.servers[]` | DNS 服务器列表 | `dns/` |
-| `sniff.enabled` | 协议嗅探 | `common/sniff/` |
+### 原子更新模式 (core.sh)
+```bash
+# 创建临时文件 + jq 写入 + mv 原子替换（同一目录保证 rename 原子性）
+tmp_file=$(mktemp "${CONFIG_FILE}.XXXXXX.tmp")
+jq "$@" "${CONFIG_FILE}" > "$tmp_file" && mv -f "$tmp_file" "${CONFIG_FILE}"
+```
+
+### jq 路径映射
+
+| jq 操作 | JSON 路径 | 对应的 Go 源码层 |
+|---------|----------|-----------------|
+| `(.inbounds[] \| select(.tag == $tag))` | `config.inbounds[?]` | `adapter/inbound/registry.go` |
+| `.tls.server_name` | `inbound.tls.serverName` | `common/tls/config.go` |
+| `.tls.reality.handshake.server` | `inbound.tls.reality.handshake.server` | `protocol/reality/` |
+| `.tls.reality.short_id` | `inbound.tls.reality.shortID` | `protocol/reality/` |
+| `.tls.certificate_path` | `inbound.tls.certificatePath` | `common/certificate/loader.go` |
+| `.route.rules[]` | `route.rules[?]` | `route/rule/*.go` |
+| `.users[0].uuid` | `inbound.users[0].uuid` | protocol/*/inbound.go |
+| `.users[0].password` | `inbound.users[0].password` | protocol/*/inbound.go |
+| `.obfs.password` | `inbound.obfs.password` | protocol/hysteria2/inbound.go |
+| `.listen_port` | `inbound.listenPort` | `adapter/inbound/options.go` |
+| `.detour` | `inbound.detour` | `adapter/inbound/detour.go` |
+
+### 常用 jq 模式
+```bash
+# 修改端口: 同时更新 tag 和 listen_port
+jq_update_config --arg old_tag "$tag" --arg new_tag "$new_tag" --argjson new_port "$port" \
+    '(.inbounds[] | select(.tag == $old_tag)) |= (.tag = $new_tag | .listen_port = $new_port)'
+
+# 删除节点: map 过滤
+jq_update_config --arg tag "$tag" '.inbounds |= map(select(.tag != $tag))'
+
+# 修改密码/UUID
+jq_update_config --arg tag "$tag" --arg uuid "$value" \
+    '(.inbounds[] | select(.tag == $tag)) |= (.users[0].uuid = $uuid)'
+
+# 修改 reality short_id
+jq_update_config --arg tag "$tag" --arg sid "$value" \
+    '(.inbounds[] | select(.tag == $tag)) |= (.tls.reality.short_id = [$sid])'
+
+# ShadowTLS: 需要同时改两个 inbounds
+jq_update_config --arg old_tag "$tag" --arg new_tag "$new_stls_tag" --argjson new_port "$new_port" --arg new_ss_tag "$ss_tag" \
+    '(.inbounds[] | select(.tag == $old_tag)) |= (.tag = $new_tag | .listen_port = $new_port | .detour = $new_ss_tag)'
+```
 
 ## 11. 写一个新协议需要的步骤
 
