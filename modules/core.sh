@@ -264,7 +264,7 @@ EOFCLIENT
 
 # ==================== 修改端口封装 ====================
 # 用法: modify_port <old_tag> <new_tag_prefix> <new_port>
-# 自动更新 inbound tag/port、route rules 引用、outbound detour 引用
+# 自动更新 inbound tag/port 和 route rules 中的引用
 modify_port() {
     local old_tag="$1"
     local new_tag_prefix="$2"
@@ -279,12 +279,6 @@ modify_port() {
     if jq -e '.route.rules' "${CONFIG_FILE}" >/dev/null 2>&1; then
         jq_update_config --arg old_tag "$old_tag" --arg new_tag "$new_tag" \
             '(.route.rules[] | select(.inbound[]? == $old_tag)) |= (.inbound = [.inbound[] | if . == $old_tag then $new_tag else . end])'
-    fi
-
-    # 3) 更新 outbounds 中 detour 引用（如 shadowsocks 被 shadowtls detoy 指向）
-    if jq -e '.outbounds[].detour' "${CONFIG_FILE}" >/dev/null 2>&1; then
-        jq_update_config --arg old_tag "$old_tag" --arg new_tag "$new_tag" \
-            '(.outbounds[] | select(.detour == $old_tag)) |= (.detour = $new_tag)'
     fi
 
     echo "$new_tag"

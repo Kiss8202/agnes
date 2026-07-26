@@ -487,7 +487,7 @@ delete_self() {
             print_info "清理网络调优配置..."
             cleanup_tune_all
         fi
-        print_info "删除 /etc/sing-box 配置目录（含模块、证书、链接等全部子目录）..."
+        print_info "删除 /etc/sing-box 配置目录..."
         rm -rf /etc/sing-box 2>/dev/null
     fi
     
