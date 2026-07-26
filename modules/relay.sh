@@ -511,7 +511,7 @@ parse_vmess_link() {
     local port=$(echo "$json" | jq -r '.port')
     local uuid=$(echo "$json" | jq -r '.id')
     local alterId=$(echo "$json" | jq -r '.aid // 0')
-    local security=$(echo "$json" | jq -r '.scy // "auto"')
+    # "security" field is V2Ray-specific; sing-box does not use it
     local net=$(echo "$json" | jq -r '.net // "tcp"')
     local path=$(echo "$json" | jq -r '.path // ""')
     local host=$(echo "$json" | jq -r '.host // ""')
@@ -581,8 +581,7 @@ parse_vmess_link() {
   \"server\": \"$(json_escape "$server")\",
   \"server_port\": ${port},
   \"uuid\": \"$(json_escape "$uuid")\",
-  \"alter_id\": ${alterId},
-  \"security\": \"$(json_escape "$security")\"${transport_config}${tls_config}
+  \"alter_id\": ${alterId}${transport_config}${tls_config}
 }"
     local relay_desc
     if [[ -n "$custom_desc" ]]; then
