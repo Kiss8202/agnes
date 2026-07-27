@@ -1,0 +1,26 @@
+# Git 内部（排除）
+.git/
+
+# 凭证和密钥（绝对不能提交到 Git）
+.github_token
+credentials.yaml
+*.cred
+.env
+*token*
+*secret*
+*.pem
+
+# node modules
+node_modules/
+
+# 浏览器数据
+browser/
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 临时文件
+*.tmp
+*.bak
+*.swp
