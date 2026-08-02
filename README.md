@@ -1,2 +1,1 @@
-# Project Agnes Workstation
-AI Agent managed workspace.
+bash <(curl -fsSL https://raw.githubusercontent.com/Kiss8202/agnes/main/reality-setup.sh)
